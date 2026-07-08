@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql://woolly:woolly@localhost:5432/woolly"
 
+    # Auth (JWT in httpOnly cookie)
+    jwt_secret_key: str = "dev-insecure-secret-change-me"
+    jwt_expires_days: int = 7
+    auth_cookie_name: str = "woolly_token"
+    cookie_secure: bool = False  # set True behind HTTPS in production
+
     # API
     cors_origins: str = "http://localhost:5173"
 

@@ -1,9 +1,10 @@
 """SQLAlchemy models."""
 
+import enum
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, Boolean, DateTime, Integer, Text, func
+from sqlalchemy import ARRAY, Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -12,6 +13,59 @@ EMBEDDING_DIM = 384
 
 class Base(DeclarativeBase):
     pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SavedPattern(Base):
+    """Join table: a user's saved (bookmarked) patterns."""
+
+    __tablename__ = "saved_patterns"
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    pattern_id: Mapped[int] = mapped_column(
+        ForeignKey("patterns.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ProjectStatus(str, enum.Enum):
+    queue = "queue"
+    active = "active"
+    hibernating = "hibernating"
+    finished = "finished"
+
+
+class Project(Base):
+    """A user's work-in-progress: a pattern plus materials, notes, and progress."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    pattern_id: Mapped[int] = mapped_column(
+        ForeignKey("patterns.id", ondelete="CASCADE"), nullable=False
+    )
+    yarn: Mapped[str | None] = mapped_column(Text)
+    needle_size: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    progress_pct: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    stitch_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[ProjectStatus] = mapped_column(
+        Enum(ProjectStatus, name="project_status"), default=ProjectStatus.queue, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class Pattern(Base):

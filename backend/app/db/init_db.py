@@ -30,6 +30,14 @@ def init_db() -> None:
 
     with engine.connect() as conn:
         conn.execute(text(IVFFLAT_INDEX_SQL))
+        # Lightweight migrations: create_all doesn't alter existing tables
+        conn.execute(
+            text(
+                "ALTER TABLE projects "
+                "ADD COLUMN IF NOT EXISTS stitch_count INTEGER NOT NULL DEFAULT 0, "
+                "ADD COLUMN IF NOT EXISTS row_count INTEGER NOT NULL DEFAULT 0"
+            )
+        )
         conn.commit()
 
     logger.info("Database initialized: pgvector enabled, tables and index created.")

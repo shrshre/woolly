@@ -23,9 +23,13 @@ def search_cache_key(query: str) -> str:
     return f"patterns:search:{query.strip().lower()}"
 
 
-def semantic_cache_key(query: str) -> str:
-    """Cache key for a semantic search, keyed by the normalized query string."""
-    return f"semantic:{query.strip().lower()}"
+def semantic_cache_key(query: str, **filters: object) -> str:
+    """Cache key for a semantic search: normalized query plus any active filters."""
+    key = f"semantic:{query.strip().lower()}"
+    active = {k: v for k, v in sorted(filters.items()) if v is not None}
+    if active:
+        key += ":" + ":".join(f"{k}={str(v).lower()}" for k, v in active.items())
+    return key
 
 
 async def get_cached(key: str) -> str | None:

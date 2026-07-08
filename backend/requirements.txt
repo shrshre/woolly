@@ -12,6 +12,11 @@ pgvector>=0.3,<1.0
 sentence-transformers>=3.0
 numpy
 
+# Auth: JWT in httpOnly cookie + bcrypt password hashing
+bcrypt>=4.1,<5.0
+PyJWT>=2.8,<3.0
+email-validator>=2.1,<3.0
+
 # Test dependencies
 pytest>=8.0,<9.0
 pytest-asyncio>=0.23,<1.0

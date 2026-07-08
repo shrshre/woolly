@@ -1,11 +1,25 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import type { PatternSummary } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { useSavedPatterns } from "../auth/SavedPatternsContext";
 import { Badge, difficultyVariant } from "./Badge";
 
 export function PatternCard({ pattern }: { pattern: PatternSummary }) {
-  // Local-only for now; persisting to a library arrives with user accounts (Week 4)
-  const [saved, setSaved] = useState(false);
+  const { user } = useAuth();
+  const { savedIds, toggleSave } = useSavedPatterns();
+  const [showSignInPrompt, setShowSignInPrompt] = useState(false);
+
+  const saved = savedIds.has(pattern.id);
   const difficulty = difficultyVariant(pattern.difficulty);
+
+  function handleSaveClick() {
+    if (!user) {
+      setShowSignInPrompt(true);
+      return;
+    }
+    void toggleSave(pattern.id);
+  }
 
   return (
     <article className="card">
@@ -36,7 +50,7 @@ export function PatternCard({ pattern }: { pattern: PatternSummary }) {
               className={saved ? "save-btn saved" : "save-btn"}
               aria-label={saved ? "Remove from library" : "Save to library"}
               aria-pressed={saved}
-              onClick={() => setSaved((s) => !s)}
+              onClick={handleSaveClick}
             >
               <i className="ti ti-bookmark" aria-hidden="true"></i>
             </button>
@@ -52,6 +66,11 @@ export function PatternCard({ pattern }: { pattern: PatternSummary }) {
             )}
           </div>
         </div>
+        {showSignInPrompt && !user && (
+          <p className="save-prompt">
+            <Link to="/login">Sign in</Link> to save patterns to your library.
+          </p>
+        )}
       </div>
     </article>
   );

@@ -1,9 +1,9 @@
 """pgvector cosine-similarity search over the patterns table."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import text
+from sqlalchemy import Float, cast, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Pattern
@@ -15,9 +15,30 @@ logger = logging.getLogger(__name__)
 # the default of probing 1 list can return fewer than `limit` results.
 IVFFLAT_PROBES = 10
 
+DifficultyTier = Literal["beginner", "intermediate", "advanced"]
 
-def semantic_search(db: Session, query: str, limit: int = 10) -> list[dict[str, Any]]:
+# Ravelry difficulty averages are 0-10; 0 means "no ratings yet".
+# Tier boundaries match the frontend badge mapping.
+DIFFICULTY_RANGES: dict[str, tuple[float, float]] = {
+    "beginner": (0.0, 3.5),
+    "intermediate": (3.5, 6.5),
+    "advanced": (6.5, 10.0),
+}
+
+
+def semantic_search(
+    db: Session,
+    query: str,
+    limit: int = 10,
+    craft: str | None = None,
+    difficulty: DifficultyTier | None = None,
+    free: bool | None = None,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
     """Embed the query and return the most similar patterns.
+
+    Filters are applied in SQL *before* the vector ranking, so the top-N
+    results are the most similar patterns within the filtered set.
 
     Each result dict matches the Week 1 PatternSummary shape, plus a
     similarity_score field (0-1, higher is better).
@@ -28,13 +49,20 @@ def semantic_search(db: Session, query: str, limit: int = 10) -> list[dict[str, 
 
     # cosine_distance = 1 - cosine_similarity; ORDER BY distance == most similar first
     distance = Pattern.embedding.cosine_distance(query_vector)
-    rows = (
-        db.query(Pattern, distance.label("distance"))
-        .filter(Pattern.embedding.isnot(None))
-        .order_by(distance)
-        .limit(limit)
-        .all()
-    )
+    q = db.query(Pattern, distance.label("distance")).filter(Pattern.embedding.isnot(None))
+
+    if craft:
+        q = q.filter(Pattern.craft.ilike(craft))
+    if free is not None:
+        q = q.filter(Pattern.is_free == free)
+    if category:
+        q = q.filter(Pattern.category.ilike(category))
+    if difficulty:
+        low, high = DIFFICULTY_RANGES[difficulty]
+        numeric = cast(Pattern.difficulty, Float)
+        q = q.filter(Pattern.difficulty.isnot(None), numeric > 0, numeric >= low, numeric < high)
+
+    rows = q.order_by(distance).limit(limit).all()
 
     results = []
     for pattern, dist in rows:
