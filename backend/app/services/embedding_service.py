@@ -36,11 +36,32 @@ def embed_text(text: str) -> list[float]:
     return vector.tolist()
 
 
+def _yarn_weight_from_raw(raw: dict[str, Any]) -> str:
+    yarn_weight = raw.get("yarn_weight") or {}
+    return yarn_weight.get("name") or ""
+
+
+def _needle_sizes_from_raw(raw: dict[str, Any]) -> str:
+    sizes = raw.get("pattern_needle_sizes") or []
+    return " ".join(size.get("name", "").strip() for size in sizes if size.get("name"))
+
+
 def build_pattern_text(pattern: dict[str, Any]) -> str:
-    """Concatenate name + description + tags into a single string for embedding."""
+    """Build the text used for embedding a pattern.
+
+    Combines name, description, and tags with craft, difficulty, category,
+    yarn weight, and needle sizes so queries like "worsted weight beginner
+    hat" match on more than just the free-text description.
+    """
+    raw = pattern.get("raw_data") or {}
     parts = [
         pattern.get("name") or "",
         pattern.get("description") or "",
         " ".join(pattern.get("tags") or []),
+        pattern.get("craft") or "",
+        pattern.get("difficulty") or "",
+        pattern.get("category") or "",
+        pattern.get("yarn_weight") or _yarn_weight_from_raw(raw),
+        pattern.get("needle_size") or _needle_sizes_from_raw(raw),
     ]
     return " ".join(part for part in parts if part).strip()

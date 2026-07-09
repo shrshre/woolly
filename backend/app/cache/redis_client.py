@@ -2,6 +2,7 @@
 
 import logging
 
+import redis as redis_sync
 import redis.asyncio as redis
 
 from app.config import get_settings
@@ -50,3 +51,33 @@ async def set_cached(key: str, value: str, ttl_seconds: int) -> None:
         await get_redis().set(key, value, ex=ttl_seconds)
     except redis.RedisError as exc:
         logger.warning("Redis SET failed (%s); response not cached.", exc)
+
+
+# Search-related key prefixes, invalidated after each seed run so newly
+# seeded patterns are immediately discoverable.
+SEARCH_CACHE_PREFIXES = ("patterns:search:*", "semantic:*")
+
+
+def clear_search_caches() -> int:
+    """Delete all cached search responses. Sync — used by the seeding pipeline.
+
+    Returns the number of keys deleted. Never raises: cache clearing is
+    best-effort and must not fail a seed run.
+    """
+    deleted = 0
+    try:
+        client = redis_sync.from_url(get_settings().redis_url, decode_responses=True)
+        for prefix in SEARCH_CACHE_PREFIXES:
+            batch: list[str] = []
+            for key in client.scan_iter(match=prefix, count=500):
+                batch.append(key)
+                if len(batch) >= 500:
+                    deleted += client.delete(*batch)
+                    batch = []
+            if batch:
+                deleted += client.delete(*batch)
+        client.close()
+        logger.info("Cleared %d cached search entries.", deleted)
+    except redis_sync.RedisError as exc:
+        logger.warning("Failed to clear search caches (%s); stale entries will expire via TTL.", exc)
+    return deleted

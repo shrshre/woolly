@@ -68,6 +68,19 @@ class Project(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class SeedRun(Base):
+    """One execution of the pattern seeding pipeline (manual or scheduled)."""
+
+    __tablename__ = "seed_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    patterns_added: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    patterns_updated: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(Text, default="running", nullable=False)  # running / completed / failed
+
+
 class Pattern(Base):
     __tablename__ = "patterns"
 

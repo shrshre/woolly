@@ -12,6 +12,7 @@ from app.api.users import router as users_router
 from app.auth.routes import router as auth_router
 from app.config import get_settings
 from app.db.init_db import init_db
+from app.scheduler import start_scheduler, stop_scheduler
 from app.services.embedding_service import get_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -27,7 +28,9 @@ async def lifespan(_: FastAPI):
     except Exception as exc:
         logger.warning("Database init failed (%s); semantic search will be unavailable.", exc)
     get_model()  # load the embedding model once at startup, not per request
+    start_scheduler()  # incremental re-seed every 24h
     yield
+    stop_scheduler()
 
 
 app = FastAPI(
