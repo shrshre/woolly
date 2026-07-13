@@ -272,9 +272,68 @@ body {
   text-align: center;
 }
 
+.results-list.is-paging {
+  opacity: 0.5;
+  transition: opacity 0.1s ease;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 1.75rem 0 0;
+}
+
+.page-num,
+.page-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 6px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b4c3b;
+  background: #ffffff;
+  border: 1px solid #e8e0d5;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.page-num:hover:not(:disabled),
+.page-arrow:hover:not(:disabled) {
+  border-color: #800020;
+  color: #800020;
+}
+
+.page-num.active {
+  background: #800020;
+  border-color: #800020;
+  color: #ffffff;
+  cursor: default;
+}
+
+.page-arrow {
+  font-size: 16px;
+}
+
+.page-arrow:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.page-num:disabled {
+  cursor: default;
+}
+
 /* ---------- Pattern card ---------- */
 
 .card {
+  position: relative; /* anchors the relevance bar/label to the card edges */
   display: flex;
   background: #ffffff;
   border: 1px solid #e8e0d5;
@@ -364,6 +423,32 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Relevance bar: width set inline, proportional to rerank_score */
+.relevance-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: #800020;
+}
+
+.relevance-label {
+  position: absolute;
+  bottom: 7px;
+  right: 12px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 400;
+  color: #9e7b6a;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.card:hover .relevance-label {
+  opacity: 1;
 }
 
 /* ---------- Badges ---------- */

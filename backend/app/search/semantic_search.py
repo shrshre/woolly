@@ -7,23 +7,46 @@ from sqlalchemy import Float, cast, text
 from sqlalchemy.orm import Session
 
 from app.db.models import Pattern
+from app.search.filters import DIFFICULTY_RANGES, DifficultyTier
 from app.services.embedding_service import embed_text
 
 logger = logging.getLogger(__name__)
 
-# IVFFlat is approximate: with lists=100 and a small seed set (~500 rows),
-# the default of probing 1 list can return fewer than `limit` results.
+# IVFFlat is approximate; probe more lists as the corpus grows past ~500 rows.
 IVFFLAT_PROBES = 10
 
-DifficultyTier = Literal["beginner", "intermediate", "advanced"]
 
-# Ravelry difficulty averages are 0-10; 0 means "no ratings yet".
-# Tier boundaries match the frontend badge mapping.
-DIFFICULTY_RANGES: dict[str, tuple[float, float]] = {
-    "beginner": (0.0, 3.5),
-    "intermediate": (3.5, 6.5),
-    "advanced": (6.5, 10.0),
-}
+def pattern_to_result(
+    *,
+    ravelry_id: int,
+    name: str,
+    designer: str | None,
+    ravelry_url: str,
+    image_url: str | None,
+    is_free: bool,
+    description: str | None,
+    difficulty: str | None,
+    similarity_score: float,
+    semantic_score: float | None = None,
+    keyword_score: float | None = None,
+    combined_score: float | None = None,
+) -> dict[str, Any]:
+    """Serialize a pattern row to the shared API result shape."""
+    return {
+        "id": ravelry_id,
+        "name": name,
+        "designer": designer,
+        "permalink": None,
+        "ravelry_url": ravelry_url,
+        "photo_url": image_url,
+        "free": is_free,
+        "description": description,
+        "difficulty": difficulty,
+        "similarity_score": similarity_score,
+        "semantic_score": semantic_score if semantic_score is not None else similarity_score,
+        "keyword_score": keyword_score if keyword_score is not None else 0.0,
+        "combined_score": combined_score if combined_score is not None else similarity_score,
+    }
 
 
 def semantic_search(
@@ -39,15 +62,11 @@ def semantic_search(
 
     Filters are applied in SQL *before* the vector ranking, so the top-N
     results are the most similar patterns within the filtered set.
-
-    Each result dict matches the Week 1 PatternSummary shape, plus a
-    similarity_score field (0-1, higher is better).
     """
     query_vector = embed_text(query)
 
     db.execute(text(f"SET LOCAL ivfflat.probes = {IVFFLAT_PROBES}"))
 
-    # cosine_distance = 1 - cosine_similarity; ORDER BY distance == most similar first
     distance = Pattern.embedding.cosine_distance(query_vector)
     q = db.query(Pattern, distance.label("distance")).filter(Pattern.embedding.isnot(None))
 
@@ -64,22 +83,20 @@ def semantic_search(
 
     rows = q.order_by(distance).limit(limit).all()
 
-    results = []
-    for pattern, dist in rows:
-        results.append(
-            {
-                "id": pattern.ravelry_id,
-                "name": pattern.name,
-                "designer": pattern.designer,
-                "permalink": None,
-                "ravelry_url": pattern.ravelry_url,
-                "photo_url": pattern.image_url,
-                "free": pattern.is_free,
-                "description": pattern.description,
-                "difficulty": pattern.difficulty,
-                "similarity_score": round(1.0 - float(dist), 4),
-            }
+    results = [
+        pattern_to_result(
+            ravelry_id=pattern.ravelry_id,
+            name=pattern.name,
+            designer=pattern.designer,
+            ravelry_url=pattern.ravelry_url,
+            image_url=pattern.image_url,
+            is_free=pattern.is_free,
+            description=pattern.description,
+            difficulty=pattern.difficulty,
+            similarity_score=round(1.0 - float(dist), 4),
         )
+        for pattern, dist in rows
+    ]
 
     logger.info("Semantic search for %r returned %d results.", query, len(results))
     return results

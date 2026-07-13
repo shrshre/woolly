@@ -1,9 +1,10 @@
 """Pattern search routes.
 
 Week 1: /patterns/search — proxies Ravelry pattern search with Redis caching.
-Week 2: /patterns/semantic-search — pgvector similarity search over seeded patterns.
+Week 2: /patterns/semantic-search — hybrid vector + BM25 search over seeded patterns.
 """
 
+import json
 import logging
 from typing import Literal
 
@@ -15,7 +16,7 @@ from app.cache.redis_client import get_cached, search_cache_key, semantic_cache_
 from app.config import Settings, get_settings
 from app.db.models import Pattern, SavedPattern, User
 from app.db.session import get_db
-from app.search.semantic_search import semantic_search as run_semantic_search
+from app.search.pipeline import search as run_search_pipeline
 from app.services.ravelry_client import (
     PatternProvider,
     PatternSearchResult,
@@ -72,6 +73,9 @@ class SemanticPatternSummary(PatternSummary):
     similarity_score: float
     description: str | None = None
     difficulty: str | None = None  # Ravelry difficulty average, e.g. "3.2" (0-10 scale)
+    # None when the reranker was unavailable and hybrid results passed through as-is
+    rerank_score: float | None = None
+    relevance_label: str | None = None  # "Strong match" / "Good match" / "Possible match"
 
 
 class SemanticSearchResult(PatternSearchResult):
@@ -81,7 +85,8 @@ class SemanticSearchResult(PatternSearchResult):
 @router.get("/semantic-search", response_model=SemanticSearchResult)
 async def semantic_search_patterns(
     q: str = Query(..., min_length=1, description="Natural-language search query"),
-    limit: int = Query(10, ge=1, le=50),
+    limit: int = Query(10, ge=1, le=50, description="Page size"),
+    offset: int = Query(0, ge=0, description="Number of results to skip (pagination)"),
     craft: str | None = Query(None, description="Filter: craft type, e.g. knitting or crochet"),
     difficulty: Literal["beginner", "intermediate", "advanced"] | None = Query(None),
     free: bool | None = Query(None, description="Filter: true for free patterns, false for paid"),
@@ -93,35 +98,39 @@ async def semantic_search_patterns(
     if not query:
         raise HTTPException(status_code=400, detail="Query must not be empty.")
 
+    # The full relevance-ranked list (up to MAX_RESULTS) is computed once and
+    # cached per query+filters; pages are sliced from it, so "load more" is a
+    # cache hit with no recompute. total reflects the full result count.
     cache_key = semantic_cache_key(query, craft=craft, difficulty=difficulty, free=free, category=category)
     cached = await get_cached(cache_key)
     if cached is not None:
-        return SemanticSearchResult.model_validate_json(cached)
+        full = json.loads(cached)
+    else:
+        try:
+            full = run_search_pipeline(
+                db, query, craft=craft, difficulty=difficulty, free=free, category=category
+            )
+        except Exception as exc:  # DB down, patterns table missing, etc.
+            logger.error("Semantic search failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="Semantic search is unavailable. Has the database been seeded?",
+            ) from exc
 
-    try:
-        rows = run_semantic_search(
-            db, query, limit=limit, craft=craft, difficulty=difficulty, free=free, category=category
-        )
-    except Exception as exc:  # DB down, patterns table missing, etc.
-        logger.error("Semantic search failed: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail="Semantic search is unavailable. Has the database been seeded?",
-        ) from exc
+        if not full and not any([craft, difficulty, free is not None, category]):
+            raise HTTPException(
+                status_code=503,
+                detail="No embedded patterns found. Run scripts/seed_patterns.py first.",
+            )
 
-    if not rows and not any([craft, difficulty, free is not None, category]):
-        raise HTTPException(
-            status_code=503,
-            detail="No embedded patterns found. Run scripts/seed_patterns.py first.",
-        )
+        await set_cached(cache_key, json.dumps(full), settings.semantic_cache_ttl_seconds)
 
-    result = SemanticSearchResult(
+    page = full[offset : offset + limit]
+    return SemanticSearchResult(
         query=query,
-        patterns=[SemanticPatternSummary(**row) for row in rows],
-        total=len(rows),
+        patterns=[SemanticPatternSummary(**row) for row in page],
+        total=len(full),
     )
-    await set_cached(cache_key, result.model_dump_json(), settings.semantic_cache_ttl_seconds)
-    return result
 
 
 @router.get("/filters")

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ARRAY, Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBEDDING_DIM = 384
@@ -96,6 +96,7 @@ class Pattern(Base):
     ravelry_url: Mapped[str] = mapped_column(Text, nullable=False)
     image_url: Mapped[str | None] = mapped_column(Text)  # linked from Ravelry, never hosted
     embedding = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
+    search_vector = mapped_column(TSVECTOR, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

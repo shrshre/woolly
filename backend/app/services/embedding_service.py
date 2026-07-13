@@ -49,13 +49,15 @@ def _needle_sizes_from_raw(raw: dict[str, Any]) -> str:
 def build_pattern_text(pattern: dict[str, Any]) -> str:
     """Build the text used for embedding a pattern.
 
-    Combines name, description, and tags with craft, difficulty, category,
-    yarn weight, and needle sizes so queries like "worsted weight beginner
-    hat" match on more than just the free-text description.
+    Combines name, designer, and description, and tags with craft,
+    difficulty, category, yarn weight, and needle sizes so queries like
+    "worsted weight beginner hat" — or a designer's name — match on more
+    than just the free-text description.
     """
     raw = pattern.get("raw_data") or {}
     parts = [
         pattern.get("name") or "",
+        pattern.get("designer") or "",
         pattern.get("description") or "",
         " ".join(pattern.get("tags") or []),
         pattern.get("craft") or "",

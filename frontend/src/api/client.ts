@@ -14,6 +14,9 @@ export interface PatternSummary {
   description?: string | null;
   /** Ravelry difficulty average on a 0-10 scale, serialized as a string (e.g. "3.2"). */
   difficulty?: string | null;
+  /** Cross-encoder relevance score (0-1); absent when the reranker was unavailable. */
+  rerank_score?: number | null;
+  relevance_label?: string | null;
 }
 
 export interface PatternSearchResult {
@@ -58,9 +61,10 @@ export interface SearchFilters {
 
 export function searchPatterns(
   query: string,
-  filters: SearchFilters = {}
+  filters: SearchFilters = {},
+  { offset = 0, limit = 10 }: { offset?: number; limit?: number } = {}
 ): Promise<PatternSearchResult> {
-  const params = new URLSearchParams({ q: query });
+  const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
   if (filters.craft) params.set("craft", filters.craft);
   if (filters.difficulty) params.set("difficulty", filters.difficulty);
   if (filters.free !== undefined) params.set("free", String(filters.free));

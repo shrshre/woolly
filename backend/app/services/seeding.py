@@ -178,6 +178,7 @@ def extract_fields(detail: dict[str, Any]) -> dict[str, Any] | None:
 def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
     return {
         "name": pattern.name,
+        "designer": pattern.designer,
         "description": pattern.description,
         "tags": pattern.tags,
         "craft": pattern.craft,

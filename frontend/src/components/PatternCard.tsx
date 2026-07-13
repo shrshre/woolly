@@ -72,6 +72,18 @@ export function PatternCard({ pattern }: { pattern: PatternSummary }) {
           </p>
         )}
       </div>
+      {pattern.rerank_score != null && (
+        <>
+          {pattern.relevance_label && (
+            <span className="relevance-label">{pattern.relevance_label}</span>
+          )}
+          <div
+            className="relevance-bar"
+            style={{ width: `${Math.round(Math.min(Math.max(pattern.rerank_score, 0), 1) * 100)}%` }}
+            aria-hidden="true"
+          />
+        </>
+      )}
     </article>
   );
 }
