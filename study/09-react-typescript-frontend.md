@@ -28,11 +28,18 @@ Woolly's components:
 
 | Component | File | What it renders |
 |---|---|---|
-| `App` | `App.tsx` | The whole page: nav, hero, search bar, results, footer |
-| `SearchBar` | `components/SearchBar.tsx` | The pill-shaped input + submit button |
-| `PatternCard` | `components/PatternCard.tsx` | One result card: image, title, badges, buttons |
-| `Badge` | `components/Badge.tsx` | A small colored pill (Beginner, Free, etc.) |
-| `SkeletonCard` | `components/SkeletonCard.tsx` | Gray loading placeholder while waiting |
+| `App` | `App.tsx` | Router, providers, nav, footer, route definitions |
+| `Home` | `pages/Home.tsx` | Search page: hero, filters, results, pagination |
+| `SearchBar` | `components/SearchBar.tsx` | Pill-shaped input + submit button |
+| `FilterBar` | `components/FilterBar.tsx` | Craft, difficulty, free/paid, category filters |
+| `PatternCard` | `components/PatternCard.tsx` | Result card: image, title, badges, relevance bar, save button |
+| `Badge` | `components/Badge.tsx` | Small colored pill (Beginner, Free, etc.) |
+| `SkeletonCard` | `components/SkeletonCard.tsx` | Gray loading placeholder |
+| `Nav` | `components/Nav.tsx` | Top navigation with auth-aware links |
+| `ProtectedRoute` | `components/ProtectedRoute.tsx` | Redirects to login if not authenticated |
+| `Library` | `pages/Library.tsx` | Saved patterns (protected) |
+| `Projects` | `pages/Projects.tsx` | WIP project tracker (protected) |
+| `StitchCounter` | `pages/StitchCounter.tsx` | Stitch/row counter tied to a project |
 
 **Analogy:** components are like **LEGO bricks**. `PatternCard` is a specific brick you
 can use once or a hundred times. You compose them together to build the full page.
@@ -51,31 +58,79 @@ can use once or a hundred times. You compose them together to build the full pag
 **State** is data that the component remembers and that, when it changes, causes React to
 re-render (update the UI).
 
-`App.tsx` has four pieces of state:
+`Home.tsx` has the main search state:
 
 ```tsx
-const [query, setQuery]   = useState("");          // what the user has typed
-const [result, setResult] = useState(null);        // the API response
-const [loading, setLoading] = useState(false);     // is a search in progress?
-const [error, setError]   = useState(null);        // any error message
+const [query, setQuery] = useState("");
+const [filters, setFilters] = useState<SearchFilters>({});
+const [patterns, setPatterns] = useState<PatternSummary[]>([]);
+const [total, setTotal] = useState(0);
+const [page, setPage] = useState(1);
+const [loading, setLoading] = useState(false);
+const [paging, setPaging] = useState(false);  // separate from initial search loading
 ```
 
-`useState` is a React **hook** — a function that gives a component its own persistent
-memory. Each call returns `[currentValue, setterFunction]`.
-
 **The flow when a user searches:**
-1. User types → `setQuery("cozy winter sweater")` → `query` updates → input field shows text
-2. User submits → `setLoading(true)` → spinner appears
-3. API call goes out
-4. Response comes back → `setResult(data)` + `setLoading(false)` → cards appear
-5. If error → `setError("Something went wrong")` + `setLoading(false)` → error message shows
+1. User types → `setQuery(...)` → input field updates
+2. User submits → `setLoading(true)` → skeleton cards appear
+3. API call: `searchPatterns(query, filters, {offset: 0, limit: 10})`
+4. Response → `setPatterns(...)`, `setTotal(...)`, `setLoading(false)` → cards appear
+5. User clicks page 2 → `searchPatterns(activeQuery, filters, {offset: 10, limit: 10})`
+   → backend cache hit, instant response
+6. If error → `setError(...)` → error message shows
 
-React automatically re-renders only the parts of the UI that depend on the changed state.
-You never manually update the DOM — you just update state and React handles it.
+## Auth state: AuthContext and ProtectedRoute
 
-**Analogy:** state is like a **scoreboard at a game**. When someone scores, you update the
-scoreboard number. The scoreboard (React) automatically displays the new number — you don't
-manually repaint the display.
+Woolly uses React Context for global auth state:
+
+```tsx
+// App.tsx wraps everything in providers
+<AuthProvider>
+  <SavedPatternsProvider>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/library" element={
+          <ProtectedRoute><Library /></ProtectedRoute>
+        } />
+      </Routes>
+    </BrowserRouter>
+  </SavedPatternsProvider>
+</AuthProvider>
+```
+
+**AuthContext** (`auth/AuthContext.tsx`):
+- On mount, calls `GET /auth/me` to check if user is logged in
+- Exposes `{user, login, logout, register}` to any component
+- `user` is `{id, email}` or `null`
+
+**ProtectedRoute** (`components/ProtectedRoute.tsx`):
+- If `user` is null → redirect to `/login`
+- Otherwise render children
+
+**SavedPatternsContext** (`auth/SavedPatternsContext.tsx`):
+- Tracks which patterns the user has bookmarked
+- `PatternCard` reads this to show filled/outlined bookmark icon
+- Calls `POST/DELETE /patterns/{id}/save` on toggle
+
+See `11-authentication-and-user-data.md` for the backend auth flow.
+
+---
+
+## React Router: multiple pages
+
+Woolly is no longer a single-page search app. **React Router** handles client-side navigation:
+
+| Route | Page | Auth required? |
+|---|---|---|
+| `/` | Home (search) | No |
+| `/login`, `/signup` | Auth forms | No |
+| `/library` | Saved patterns | Yes |
+| `/projects` | WIP tracker | Yes |
+| `/counter` | Stitch counter | Yes |
+| `/grid-maker` | Color grid tool | No |
+
+Navigation between pages doesn't reload HTML — React Router swaps components in the
+same JavaScript bundle. The URL bar updates so users can bookmark and share links.
 
 ---
 
@@ -122,7 +177,7 @@ This is especially powerful for a full-stack developer who needs to keep both si
 backend:
 
 ```typescript
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 export interface PatternSummary {
   id: number;
@@ -131,37 +186,37 @@ export interface PatternSummary {
   ravelry_url: string | null;
   photo_url: string | null;
   free: boolean | null;
+  similarity_score?: number;
+  rerank_score?: number | null;
+  relevance_label?: string | null;  // "Strong match" / "Good match" / "Possible match"
+  difficulty?: string | null;
 }
 
-export interface PatternSearchResult {
-  query: string;
-  patterns: PatternSummary[];
-  total: number | null;
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    credentials: "include",  // sends httpOnly auth cookie
+    ...init,
+  });
+  // ... error handling
 }
 
-class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
-
-export async function searchPatterns(query: string): Promise<PatternSearchResult> {
-  const url = `${API_BASE}/patterns/semantic-search?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url);
-  
-  if (!response.ok) {
-    const body = await response.json();
-    throw new ApiError(response.status, body.detail ?? "Unknown error");
-  }
-  
-  return response.json();
+export function searchPatterns(
+  query: string,
+  filters: SearchFilters = {},
+  { offset = 0, limit = 10 } = {}
+): Promise<PatternSearchResult> {
+  const params = new URLSearchParams({ q: query, limit: String(limit), offset: String(offset) });
+  if (filters.craft) params.set("craft", filters.craft);
+  // ... other filters
+  return request(`/patterns/semantic-search?${params}`);
 }
 ```
 
 **What this gives you:**
 - One place to change if the backend URL changes
-- TypeScript knows the shape of every API response — autocomplete, type checking
-- A custom `ApiError` class that carries the HTTP status code for error handling in the UI
+- `credentials: "include"` on every request for auth cookies
+- Typed interfaces for search, auth, library, and projects
+- Filter and pagination params built into `searchPatterns`
 
 ---
 
@@ -231,29 +286,31 @@ OS dark mode preference.
 
 ---
 
-## What's wired up vs what's placeholder
+## What's wired up vs what's still on the backlog
 
-Be honest in interviews about what's real vs. fake:
+Be honest in interviews about what's real vs. planned:
 
 | UI element | Status | Notes |
 |---|---|---|
-| Search bar | ✅ Real | Calls `/patterns/semantic-search` |
-| Pattern cards with results | ✅ Real | Populated from API response |
+| Search bar + filters | ✅ Real | Calls `/patterns/semantic-search` with craft, difficulty, free, category |
+| Pattern cards with relevance | ✅ Real | Shows `rerank_score`, relevance label, difficulty badge |
+| Pagination | ✅ Real | Offset/limit, backend caches full list |
 | Skeleton cards | ✅ Real | Show during loading |
 | Error state | ✅ Real | Shows API error messages |
-| Suggestion chips | ✅ Real | Populate the search input and trigger search |
-| Save/bookmark button | ⚠️ Visual only | Toggles state locally, not persisted |
-| "My library" nav link | ❌ Placeholder | `href="#"` — does nothing |
-| "Projects" nav link | ❌ Placeholder | `href="#"` — does nothing |
-| "Sign in" button | ❌ Placeholder | No-op — auth not built yet |
+| Suggestion chips | ✅ Real | Populate search input and trigger search |
+| Save/bookmark button | ✅ Real | Persists to DB when logged in; prompts login when not |
+| Sign in / Sign up | ✅ Real | JWT cookie auth |
+| My library | ✅ Real | Protected route, lists saved patterns |
+| Projects tracker | ✅ Real | Create/update/delete WIP projects |
+| Stitch counter | ✅ Real | Persists stitch/row counts to project |
+| Grid maker | ✅ Real | Client-side color quantization tool |
+| Ravelry account connect | ❌ Backlog | Still using app-level Ravelry credentials |
+| Recommendations engine | ❌ Backlog | |
+| Image-to-pattern search | ❌ Backlog | |
+| Public project pages | ❌ Backlog | |
 
-"Save" button has local state (click it and it turns burgundy), but when you refresh the
-page it's gone. Auth and a backend `saved_patterns` table are needed to persist it.
-
-**Interview framing:** "I intentionally scoped the frontend to match what's working in the
-backend. The save button, nav links, and sign-in are designed and visible so I can
-demonstrate the full product vision, but I'm transparent that they're not wired to real
-functionality yet."
+**Interview framing:** "The core product loop is fully wired — search, save, track projects.
+Ravelry OAuth and recommendations are on the backlog. I'm transparent about scope."
 
 ---
 
@@ -273,15 +330,14 @@ manual sync is fine at this scale.
 
 ---
 
-## Single-page application (SPA)
+## Multi-page application with React Router
 
-Woolly is a **single-page application** — there's one HTML file (`index.html`) and one
-JavaScript bundle. React renders everything in JavaScript; no new HTML page is fetched from
-the server when you do things.
+Woolly uses **React Router** for client-side navigation. There's still one HTML file
+(`index.html`) and one JavaScript bundle, but React Router swaps page components based on
+the URL — `/library`, `/projects`, `/counter`, etc.
 
-**Implication:** there's only one "page" (the search page). Future features like "My Library"
-and "Projects" would be added using **React Router** — a library that fakes page navigation
-in the browser without actually loading new HTML from the server.
+Protected routes gate personal pages behind authentication. Public pages (search, grid maker,
+login) are accessible to everyone.
 
 ---
 
@@ -308,8 +364,24 @@ data loads. It's better than a spinner because users can see what's coming and i
 the layout doesn't jump when content arrives, and it feels faster — perceived performance
 is as important as real performance."
 
+**Q: Walk me through your React architecture.**
+A: "React Router for multi-page navigation. AuthContext provides global auth state from
+httpOnly cookie sessions. SavedPatternsContext tracks bookmarks. The search page (Home) manages
+query, filters, pagination, and loading state. ProtectedRoute gates library, projects, and
+stitch counter behind login. A typed API client handles all backend communication with
+`credentials: include` for cookies."
+
+**Q: How does the frontend handle authentication?**
+A: "AuthContext calls GET /auth/me on mount. Login/register set an httpOnly cookie via the
+backend — the frontend never touches the JWT directly. Every API call uses `credentials:
+include`. ProtectedRoute redirects unauthenticated users to /login."
+
+**Q: How does pagination work with the cached backend results?**
+A: "The frontend sends offset and limit with each search request. The backend caches the
+full ranked list per query+filters, so page 2 is a cache hit — just a slice. The frontend
+tracks the current page and total from the API's `total` field."
+
 **Q: How does the frontend talk to the backend?**
-A: "Through a typed API client in `api/client.ts`. It uses the browser's native `fetch` API
-to send HTTP GET requests to the backend's `/patterns/semantic-search` endpoint. All
-request/response shapes are typed with TypeScript interfaces. Errors are caught and wrapped
-in a custom `ApiError` class with the HTTP status code."
+A: "Typed API client in `api/client.ts`. Uses native `fetch` with `credentials: include`
+for auth cookies. Search sends query + filters + pagination params. Response shapes match
+Pydantic models on the backend. Errors wrapped in a custom `ApiError` class."

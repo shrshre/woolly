@@ -67,7 +67,11 @@ PostgreSQL."
 
 ## What pgvector actually is
 
-pgvector is a PostgreSQL extension — a plug-in that adds new capabilities to PostgreSQL:
+pgvector is a PostgreSQL extension — a plug-in that adds new capabilities to PostgreSQL.
+In Woolly, it's one of three search indexes in the same database (alongside full-text GIN
+and designer trigram GIN). The semantic leg of hybrid search uses pgvector.
+
+pgvector adds:
 
 1. **A new data type:** `vector(384)` — a column that stores a list of 384 floats
 2. **New operators:** `<=>` (cosine distance), `<->` (Euclidean distance), `<#>` (dot product)

@@ -1,14 +1,34 @@
-# Woolly Study Plan — Iteration 1 Roadmap
+# Woolly Study Plan — Current Architecture
 
-This folder contains one deep-dive file per concept implemented in Woolly (Weeks 1 & 2).
-The goal is to go from "I built this with help" to "I can explain every layer, defend every
-decision, and answer follow-up questions cold."
+This folder contains one deep-dive file per concept implemented in Woolly. The goal is to go
+from "I built this with help" to "I can explain every layer, defend every decision, and answer
+follow-up questions cold."
 
 Each file is self-contained. You can study them in any order, but the sequence below is
 designed so each topic builds on the previous one.
 
-**Time estimate:** 8–10 focused study sessions (45–60 min each). Don't try to do it all at
+**Time estimate:** 12–14 focused study sessions (45–60 min each). Don't try to do it all at
 once — two sessions per day is the sweet spot.
+
+---
+
+## What Changed Since the Original Plan
+
+The original study plan covered Weeks 1 & 2: semantic search, pgvector, Redis, Docker. Woolly
+has since grown into a full product architecture:
+
+| Area | Before | Now |
+|---|---|---|
+| Search | Pure semantic (vector only) | **Two-stage pipeline:** hybrid retrieval (vector + BM25 + designer trigram) → cross-encoder reranking |
+| Filters | None | Craft, difficulty tier, free/paid, category — applied in SQL before ranking |
+| Pagination | Single page of 10 | Up to 50 ranked results, cached as a full list, paginated via `offset`/`limit` |
+| Auth | Placeholder UI | JWT in httpOnly cookies, bcrypt passwords, protected routes |
+| User data | None | Saved patterns (library), project tracker (WIP), stitch counter |
+| Seeding | Manual script only | Manual + **24h incremental scheduler**, `seed_runs` audit table, cache invalidation |
+| Frontend | Single search page | React Router, multiple pages, auth context, filter bar |
+
+**Interview priority:** Sessions 3, 4, and 10 (search stack) are where you'll spend the most
+time. Know that pipeline cold.
 
 ---
 
@@ -18,13 +38,15 @@ once — two sessions per day is the sweet spot.
 |---|---|---|
 | `01-full-stack-architecture.md` | How the whole system fits together | Must-know |
 | `02-fastapi-backend.md` | The Python server (FastAPI, async, routing) | Must-know |
-| `03-semantic-search-embeddings.md` | The star feature — AI meaning-based search | Must-know |
+| `03-semantic-search-embeddings.md` | Embeddings, bi-encoders, cosine similarity | Must-know |
 | `04-pgvector-vector-databases.md` | How vectors are stored and searched in Postgres | Must-know |
-| `05-postgresql-sqlalchemy.md` | The database and how Python talks to it | Must-know |
-| `06-redis-caching.md` | The speed layer (Redis cache) | Strong to know |
+| `05-postgresql-sqlalchemy.md` | Schema, ORM, full-text search, user tables | Must-know |
+| `06-redis-caching.md` | Cache-aside, filter-aware keys, invalidation | Must-know |
 | `07-docker-containerization.md` | Running the app anywhere, reliably | Strong to know |
-| `08-external-apis-design-patterns.md` | Talking to Ravelry + key code patterns | Strong to know |
-| `09-react-typescript-frontend.md` | The UI layer (React, TypeScript, Vite) | Good to know |
+| `08-external-apis-design-patterns.md` | Ravelry API + key code patterns | Strong to know |
+| `09-react-typescript-frontend.md` | React Router, auth, filters, pagination | Strong to know |
+| `10-hybrid-search-and-reranking.md` | **The headline feature** — hybrid + rerank pipeline | **Must-know** |
+| `11-authentication-and-user-data.md` | JWT cookies, library, projects | Strong to know |
 
 ---
 
@@ -34,11 +56,11 @@ once — two sessions per day is the sweet spot.
 **File:** `01-full-stack-architecture.md`
 
 Start here. Before diving into any specific piece, you need a clear mental model of how
-everything connects. This session answers: "What does each piece of Woolly actually do,
-and how do they talk to each other?"
+everything connects.
 
 **Goal by end of session:** You can draw the system on a whiteboard and explain what each
-box does and what travels between them.
+box does and what travels between them — including auth, the two-stage search pipeline, and
+user features.
 
 **Sample question you should be able to answer:**
 > "Walk me through what happens from the moment a user types a search query to the moment
@@ -49,141 +71,124 @@ box does and what travels between them.
 ### Session 2 — The server (45 min)
 **File:** `02-fastapi-backend.md`
 
-The FastAPI backend is the brain of the operation. This session covers how the server
-receives requests, validates data, orchestrates work, and sends responses back.
-
-**Goal by end of session:** You can explain what FastAPI is, why Python's `async` matters
-for a web server, what Pydantic schemas do, and what "dependency injection" means in plain
-English.
+The FastAPI backend is the brain of the operation. Covers routing, Pydantic, dependency
+injection, lifespan hooks (two AI models + scheduler), and the new routers.
 
 **Sample questions:**
 > "Why did you use FastAPI over Flask or Django?"
-> "What does async/await actually buy you in a web server?"
-> "What is Pydantic and why is it useful?"
+> "What happens when the server starts up?"
+> "How do you protect routes that require a logged-in user?"
 
 ---
 
-### Session 3 — Semantic search: the concept (60 min)
+### Session 3 — Embeddings: the foundation (50 min)
 **File:** `03-semantic-search-embeddings.md`
 
-This is the most important session. The semantic search is the headline technical feature
-and the thing interviewers will probe the hardest. Read it slowly, twice if needed.
-
-**Goal by end of session:** You can explain what an embedding is to a non-technical person,
-explain cosine similarity without formulas, explain why Woolly does NOT use OpenAI, and
-walk through exactly what happens when a user submits a search.
+Covers what embeddings are, the bi-encoder model, cosine similarity, and seeding. Semantic
+search is now *one leg* of hybrid retrieval — but you still need the embedding concepts cold.
 
 **Sample questions:**
-> "Explain how your semantic search works."
 > "What is an embedding? What is a vector?"
-> "Why not just use keyword search? What's the difference?"
-> "What is cosine similarity and why does it work for text?"
-> "Why did you choose all-MiniLM-L6-v2?"
+> "Why run the model locally instead of using OpenAI?"
+> "What is the difference between a bi-encoder and a cross-encoder?"
 
 ---
 
-### Session 4 — pgvector and the vector database (45 min)
+### Session 4 — pgvector (40 min)
 **File:** `04-pgvector-vector-databases.md`
 
-Builds directly on Session 3. Once you understand embeddings, this covers how Woolly
-actually *stores* and *searches* them using PostgreSQL + the pgvector extension.
-
-**Goal by end of session:** You can explain what pgvector adds to PostgreSQL, what an
-IVFFlat index is (the drawer-dividers analogy), what "approximate nearest neighbor" means,
-and when you'd use a dedicated vector database vs pgvector.
+How Woolly stores and searches 384-dimensional embeddings inside PostgreSQL.
 
 **Sample questions:**
-> "What is pgvector? Why not use a dedicated vector database like Pinecone?"
-> "What is an IVFFlat index and why does Woolly use it?"
-> "What does 'approximate nearest neighbor' mean and what's the trade-off?"
-> "How would the search scale to 1 million patterns?"
+> "What is pgvector? Why not Pinecone?"
+> "What is an IVFFlat index?"
+> "What does approximate nearest neighbor mean?"
 
 ---
 
-### Session 5 — The database (45 min)
+### Session 5 — Hybrid search + reranking (60 min) ⭐
+**File:** `10-hybrid-search-and-reranking.md`
+
+**This is the most important new session.** Read it slowly, twice if needed. This is what
+you'll talk about when an interviewer asks "explain your search architecture."
+
+**Goal by end of session:** You can explain the two-stage pipeline, why hybrid beats pure
+semantic, how BM25 and designer trigram matching complement vectors, and why reranking only
+runs on a small candidate pool.
+
+**Sample questions:**
+> "Walk me through your search architecture."
+> "Why hybrid search instead of pure semantic?"
+> "What is reranking and why not run it over the whole database?"
+> "How do filters interact with search?"
+
+---
+
+### Session 6 — The database (45 min)
 **File:** `05-postgresql-sqlalchemy.md`
 
-Covers relational databases, the `patterns` table schema, and how SQLAlchemy (the ORM)
-lets Python code talk to PostgreSQL without writing raw SQL everywhere.
-
-**Goal by end of session:** You can explain the `patterns` table schema and *why* each
-column exists, what an ORM is (the translation layer analogy), and what a database session
-is.
+Covers the `patterns` table, new user tables, `search_vector` for BM25, designer trigram
+indexes, and SQLAlchemy sessions.
 
 **Sample questions:**
 > "Walk me through your database schema."
-> "What is an ORM? Why use one?"
 > "Why is `raw_data` stored as JSONB?"
-> "What does 'idempotent' mean in the context of database setup?"
+> "How does full-text search work alongside pgvector?"
 
 ---
 
-### Session 6 — Redis caching (40 min)
+### Session 7 — Redis caching (40 min)
 **File:** `06-redis-caching.md`
 
-Covers why caching exists, how Woolly's cache-aside pattern works, and the graceful
-degradation strategy when Redis goes down.
-
-**Goal by end of session:** You can explain cache-aside in one sentence, explain what TTL
-means and how Woolly chose its TTL values, and explain what happens when Redis is
-unavailable.
+Cache-aside, filter-aware cache keys, full-result caching for pagination, and cache
+invalidation after seeding.
 
 **Sample questions:**
 > "How does your caching layer work?"
-> "What is cache-aside?"
-> "What happens if Redis goes down?"
-> "Why two different TTLs for keyword vs semantic search?"
+> "Why cache the full result list instead of each page separately?"
+> "What happens when new patterns are seeded?"
 
 ---
 
-### Session 7 — Docker (40 min)
+### Session 8 — Auth and user data (45 min)
+**File:** `11-authentication-and-user-data.md`
+
+JWT in httpOnly cookies, saved patterns, project tracker, authorization patterns.
+
+**Sample questions:**
+> "How does authentication work?"
+> "Why httpOnly cookies instead of localStorage?"
+> "How do you ensure users only see their own projects?"
+
+---
+
+### Session 9 — Docker (40 min)
 **File:** `07-docker-containerization.md`
-
-Covers what Docker is, why it solves real problems, and how `docker-compose` orchestrates
-the four Woolly services.
-
-**Goal by end of session:** You can explain the difference between an image and a container,
-explain what `docker-compose up` does, and explain why Docker makes local dev and eventual
-cloud deployment easier.
 
 **Sample questions:**
 > "Why Docker? What problem does it solve?"
-> "What's the difference between a Dockerfile and docker-compose.yml?"
 > "How would you deploy this on AWS?"
 
 ---
 
-### Session 8 — External APIs and code patterns (45 min)
+### Session 10 — External APIs and code patterns (45 min)
 **File:** `08-external-apis-design-patterns.md`
 
-Covers talking to the Ravelry API, error handling, and the key software design patterns
-used throughout Woolly (interface/ABC, singleton, 12-factor config, graceful degradation).
-
-**Goal by end of session:** You can explain why the Ravelry client is behind an "interface,"
-what the 12-factor app principle means for Woolly's config, and why the embedding model is
-a singleton.
-
 **Sample questions:**
-> "What is the interface pattern and why did you use it for the Ravelry client?"
-> "What is a singleton and where does Woolly use one?"
-> "What does '12-factor app' mean?"
-> "How do you handle errors from external APIs?"
+> "What is the interface pattern and why did you use it for Ravelry?"
+> "Where does Woolly use the singleton pattern?"
 
 ---
 
-### Session 9 — The front end (40 min)
+### Session 11 — The front end (45 min)
 **File:** `09-react-typescript-frontend.md`
 
-Covers the React UI layer. Since the back end is Woolly's core, this is lower priority —
-but knowing it lets you speak to the full stack confidently.
-
-**Goal by end of session:** You can explain React components and state, what TypeScript adds
-over JavaScript, what Vite is, and how the front end calls the back end.
+React Router, auth context, FilterBar, pagination, protected routes.
 
 **Sample questions:**
 > "Walk me through your React architecture."
-> "What does TypeScript add? Why not plain JavaScript?"
-> "What is a skeleton loading state and why is it good UX?"
+> "How does the frontend handle authentication?"
+> "How does pagination work with the cached backend results?"
 
 ---
 
@@ -204,21 +209,23 @@ No matter what, be ready for these five. If you can answer these well, the inter
 well.
 
 1. **"Walk me through your search architecture."**
-   → Sessions 3 + 4 combined.
+   → Session 5 (`10-hybrid-search-and-reranking.md`) is your anchor. Layer in Sessions 3, 4,
+   6, and 7 for depth.
 
 2. **"What happens end to end when a user searches?"**
-   → Session 1 + Session 2 gives you the skeleton, Sessions 3/4/6 fill in the organs.
+   → Session 1 gives the skeleton; Sessions 5, 6, and 7 fill in the organs.
 
-3. **"Why did you make [X] decision?"** (usually about embeddings, pgvector, or Redis)
+3. **"Why did you make [X] decision?"** (usually about hybrid search, reranking, pgvector, or Redis)
    → Every session has a "why this, not that" section. Decisions are the most important
    things to explain.
 
 4. **"How would this scale?"**
-   → Sessions 3, 4, and 6 all have a scaling section.
+   → Sessions 3, 4, 5, and 6 all have scaling sections.
 
 5. **"What would you build next?"**
-   → You know the answer: hybrid retrieval (BM25 + vectors), reranking, auth, and
-   observability — all in the Week 3 PRD.
+   → See your backlog: recommendations engine, image-to-pattern search, Ravelry OAuth,
+   public project pages, observability (metrics/tracing). Hybrid retrieval and reranking
+   are **done** — don't say you'd build those next.
 
 ---
 
@@ -226,12 +233,38 @@ well.
 
 Commit these to memory. Each is a launchpad for a longer explanation.
 
-- **Full-stack app:** "A React front end talks to a FastAPI back end, which reads from PostgreSQL and caches in Redis — all running locally via Docker."
-- **Semantic search:** "I convert both patterns and queries into 384-number meaning-coordinates using a local AI model, then find the closest ones in a PostgreSQL vector column."
+- **Full-stack app:** "A React front end talks to a FastAPI back end over REST, with PostgreSQL for permanent data, Redis for search caching, and two local AI models — all running in Docker."
+- **Two-stage search:** "Stage 1 is fast hybrid retrieval — vector similarity, PostgreSQL full-text (BM25), and designer trigram matching fused with weighted scores. Stage 2 is a cross-encoder reranker that scores query-document pairs together on the top ~60 candidates for much higher accuracy."
+- **Bi-encoder vs cross-encoder:** "The bi-encoder embeds query and document separately (fast, runs over the whole corpus). The cross-encoder scores them together (slow but accurate, only runs on the candidate pool)."
 - **pgvector:** "A PostgreSQL extension that lets you store vectors and search by cosine similarity — nearest-neighbor search inside a regular database."
-- **IVFFlat index:** "An approximate index that divides the vector space into clusters so the database doesn't scan every row for every query."
-- **Redis cache:** "I save each search result in Redis for 30 minutes so identical queries are served instantly without re-running the AI or database."
-- **Docker:** "Each service runs in an identical, isolated container so the app runs the same on any machine and deploys cleanly to the cloud."
-- **Interface pattern:** "The Ravelry client sits behind an abstract contract so I can swap auth methods later without touching the API routes."
-- **Singleton:** "The AI model is loaded once when the server starts and shared across all requests, because loading it per-request would take 5 seconds each time."
+- **BM25 / full-text search:** "PostgreSQL's `tsvector` + GIN index lets me do keyword ranking with `ts_rank` — catches exact terms and designer names that pure semantic search might miss."
+- **Designer trigram matching:** "The `pg_trgm` extension compares space-stripped query text to designer names, so 'Petite Knit' finds PetiteKnit patterns that full-text search tokenization would miss."
+- **Redis cache:** "I cache the full ranked result list (up to 50 patterns) per query+filters for 30 minutes, so pagination is instant and identical queries skip both AI models and the database."
+- **Auth:** "JWT stored in an httpOnly cookie — the browser sends it automatically, JavaScript can't read it (XSS-safe), and protected routes use a FastAPI dependency that decodes the token."
+- **Singleton:** "Both AI models (bi-encoder and cross-encoder) load once at startup and are shared across all requests — loading per-request would add seconds of latency."
 - **12-factor config:** "All secrets and server addresses come from environment variables — nothing is hardcoded — so the same code runs locally and in the cloud."
+
+---
+
+## Quick Reference: Key Code Paths
+
+When an interviewer says "show me where that happens," know these files:
+
+| Concern | File |
+|---|---|
+| Search entry point | `backend/app/api/patterns.py` → `semantic_search_patterns()` |
+| Two-stage pipeline | `backend/app/search/pipeline.py` |
+| Hybrid retrieval | `backend/app/search/hybrid_search.py` |
+| Pure semantic (fallback) | `backend/app/search/semantic_search.py` |
+| Cross-encoder reranking | `backend/app/services/reranking_service.py` |
+| SQL filters | `backend/app/search/filters.py` |
+| Bi-encoder embeddings | `backend/app/services/embedding_service.py` |
+| Redis cache keys | `backend/app/cache/redis_client.py` |
+| DB schema | `backend/app/db/models.py` |
+| DB init (pgvector, full-text, trigram) | `backend/app/db/init_db.py` |
+| Auth routes | `backend/app/auth/routes.py` |
+| JWT + bcrypt | `backend/app/auth/security.py` |
+| Seeding + cache invalidation | `backend/app/services/seeding.py` |
+| 24h scheduler | `backend/app/scheduler.py` |
+| Frontend API client | `frontend/src/api/client.ts` |
+| Auth state | `frontend/src/auth/AuthContext.tsx` |

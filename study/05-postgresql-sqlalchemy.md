@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS patterns (
     is_free     BOOLEAN DEFAULT FALSE,
     ravelry_url TEXT NOT NULL,         -- link back to Ravelry
     image_url   TEXT,                  -- Ravelry CDN URL — never hosted by Woolly
-    embedding   vector(384),           -- the AI embedding (added by pgvector)
+    embedding   vector(384),           -- the AI embedding (pgvector)
+    search_vector tsvector,              -- full-text search index (BM25 leg)
     tags        TEXT[],                -- array of tag strings
     raw_data    JSONB,                 -- full Ravelry API response
     created_at  TIMESTAMP DEFAULT NOW(),
@@ -57,19 +58,87 @@ CREATE TABLE IF NOT EXISTS patterns (
 | `designer` | "by Jane Smith" — shown in the card |
 | `description` | Used in the embedding; shown in search results |
 | `difficulty` | Ravelry stores 0-10 as a float string; Woolly maps it to Beginner/Intermediate/Advanced in the UI |
-| `craft` | "knitting" or "crochet" — future filter |
-| `category` | "Sweaters", "Hats", etc. — future filter |
-| `is_free` | The free/paid badge in the UI |
-| `ravelry_url` | "View on Ravelry" link — Woolly never hosts patterns, always links back |
-| `image_url` | Pattern photo — Ravelry hosts it; Woolly just stores the URL |
-| `embedding` | The 384-float semantic embedding — the whole point of Week 2 |
-| `tags` | Used in embedding text; future filter. Stored as PostgreSQL array `TEXT[]` |
+| `embedding` | The 384-float semantic embedding — powers the vector search leg |
+| `search_vector` | PostgreSQL `tsvector` for full-text (BM25) search — auto-updated by trigger |
+| `tags` | Used in embedding text and full-text index |
+| `craft` | "knitting" or "crochet" — active search filter |
+| `category` | "Sweaters", "Hats", etc. — active search filter |
 | `raw_data` | Full Ravelry payload — for future field extraction without re-querying Ravelry |
 | `created_at/updated_at` | Audit trail — when was this stored/last changed |
 
 **Key design decision:** `image_url` stores only the URL, not the actual image. Woolly
 never downloads or hosts pattern images — it just links to Ravelry's CDN. This is required
 by Ravelry's API terms of service and also saves significant storage.
+
+---
+
+## User tables: auth and personal data
+
+Beyond `patterns`, Woolly has tables for authenticated features:
+
+### `users`
+```sql
+id SERIAL PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, created_at TIMESTAMP
+```
+
+### `saved_patterns` (join table)
+```sql
+user_id → users.id, pattern_id → patterns.id, PRIMARY KEY (user_id, pattern_id)
+```
+Many-to-many: a user can save many patterns; a pattern can be saved by many users.
+
+### `projects`
+```sql
+user_id, pattern_id, yarn, needle_size, notes, progress_pct,
+stitch_count, row_count, status (queue/active/hibernating/finished)
+```
+A project is a pattern the user is actively working on, with WIP metadata.
+
+### `seed_runs`
+```sql
+started_at, finished_at, patterns_added, patterns_updated, status
+```
+Audit log for seeding runs (manual or scheduled). Useful for observability.
+
+See `11-authentication-and-user-data.md` for how these connect to the API.
+
+---
+
+## Full-text search: the `search_vector` column
+
+Woolly uses PostgreSQL's built-in full-text search for the keyword leg of hybrid retrieval.
+
+Set up in `init_db.py`:
+- Column: `search_vector tsvector`
+- Populated from: name + designer + description + tags
+- Index: GIN index for fast lookups
+- Trigger: auto-updates `search_vector` on INSERT/UPDATE
+
+```sql
+-- Keyword search in hybrid_search.py:
+WHERE search_vector @@ plainto_tsquery('english', :query)
+ORDER BY ts_rank(search_vector, plainto_tsquery('english', :query)) DESC
+```
+
+**Why not Elasticsearch?** At Woolly's scale, PostgreSQL full-text search with a GIN index
+is fast enough and keeps everything in one database. No extra infrastructure.
+
+---
+
+## Designer trigram matching: `pg_trgm`
+
+Brand-style designer names (PetiteKnit, KnitPicks) break full-text tokenization. Woolly
+uses the `pg_trgm` extension:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX patterns_designer_trgm_idx ON patterns USING GIN (designer gin_trgm_ops);
+```
+
+Similarity is computed on space-stripped, lowercased names:
+`similarity(replace(lower(designer), ' ', ''), 'petiteknit')`
+
+See `10-hybrid-search-and-reranking.md` for how this fits into hybrid search.
 
 ---
 
@@ -125,8 +194,9 @@ class Pattern(Base):
     is_free     = Column(Boolean, default=False)
     ravelry_url = Column(Text, nullable=False)
     image_url   = Column(Text)
-    embedding   = Column(Vector(384))    # pgvector type
-    tags        = Column(ARRAY(Text))    # PostgreSQL array
+    embedding   = mapped_column(Vector(384))    # pgvector type
+    search_vector = mapped_column(TSVECTOR)     # full-text search
+    tags        = mapped_column(ARRAY(Text))
     raw_data    = Column(JSONB)
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now())
@@ -175,10 +245,13 @@ In `backend/app/db/init_db.py`, the setup code runs every time the server starts
 
 ```python
 def init_db():
-    with engine.connect() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.commit()
-    Base.metadata.create_all(bind=engine)  # creates tables if they don't exist
+    # Enable pgvector extension
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.create_all(engine)  # creates all tables (patterns, users, projects, etc.)
+    # Create indexes: IVFFlat (vectors), GIN (full-text), GIN (trigram)
+    conn.execute(text(IVFFLAT_INDEX_SQL))
+    conn.execute(text(FULLTEXT_SEARCH_SQL))   # search_vector + trigger
+    conn.execute(text(DESIGNER_TRGM_SQL))     # pg_trgm extension + index
 ```
 
 The key phrase is **`IF NOT EXISTS`**. This makes the initialization **idempotent** —
@@ -281,9 +354,12 @@ database restarted).
 ## Interview questions for this topic
 
 **Q: Walk me through your database schema.**
-A: Walk through the `patterns` table column by column using the table above. Focus on the
-interesting ones: `embedding vector(384)` (the AI part), `raw_data JSONB` (flexibility),
-`ravelry_id UNIQUE` (prevents duplicates), and `image_url` (URL only, never hosted).
+A: "The core table is `patterns` — Ravelry metadata plus a 384-dim embedding vector,
+a `search_vector` tsvector for full-text search, and tags as a PostgreSQL array. User tables
+include `users` (email + bcrypt hash), `saved_patterns` (many-to-many bookmarks), and
+`projects` (WIP tracker with yarn, progress, stitch counts). `seed_runs` logs seeding
+executions. Three index types: IVFFlat for vectors, GIN for full-text, GIN trigram for
+designer names."
 
 **Q: What is an ORM and why use one?**
 A: "An ORM maps database tables to Python classes so you can work with familiar objects

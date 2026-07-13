@@ -49,9 +49,10 @@ and work together:
 ┌─────────────────────────────────────────────────────────────┐
 │               FastAPI backend (Python/Uvicorn)              │
 │                    localhost:8000                            │
-│  - Receives search queries                                  │
+│  - Receives search queries (+ filters, pagination)          │
 │  - Checks Redis cache                                       │
-│  - Runs semantic search via pgvector                        │
+│  - Two-stage search: hybrid retrieval → reranking         │
+│  - Auth (JWT cookies), saved patterns, projects           │
 │  - Returns results as JSON                                  │
 └─────────────┬──────────────────────────┬────────────────────┘
               │                          │
@@ -59,9 +60,11 @@ and work together:
 ┌─────────────────────┐   ┌──────────────────────────────────┐
 │  Redis (cache)      │   │  PostgreSQL + pgvector (database) │
 │  localhost:6379     │   │  localhost:5432                   │
-│  - Saves search     │   │  - Stores 500+ patterns           │
-│    results for 30   │   │  - Stores 384-dim embeddings      │
-│    minutes          │   │  - Runs cosine similarity search  │
+│  - Saves full ranked  │   │  - Stores 500+ patterns           │
+│    lists for 30 min   │   │  - Stores 384-dim embeddings      │
+│                       │   │  - Full-text search (BM25)        │
+│                       │   │  - Designer trigram matching      │
+│                       │   │  - Users, saved patterns, projects│
 └─────────────────────┘   └──────────────────────────────────┘
 ```
 
@@ -119,7 +122,14 @@ Every response has:
 |---|---|---|
 | `GET /health` | "Are you alive?" | `{"status": "ok"}` |
 | `GET /patterns/search?q=hat` | "Keyword search for hat via Ravelry" | List of pattern objects |
-| `GET /patterns/semantic-search?q=cozy+sweater` | "Find patterns by meaning" | List of pattern objects, ranked by similarity |
+| `GET /patterns/semantic-search?q=cozy+sweater&craft=knitting&offset=0&limit=10` | "Hybrid search + rerank, with filters and pagination" | Ranked pattern list with `rerank_score`, `total` |
+| `GET /patterns/filters` | "What craft/category options exist?" | `{crafts: [...], categories: [...]}` |
+| `POST /auth/register` | "Create an account" | User object + httpOnly JWT cookie |
+| `POST /auth/login` | "Log in" | User object + cookie |
+| `GET /auth/me` | "Who am I?" | User object or 401 |
+| `POST /patterns/{id}/save` | "Bookmark this pattern" | 204 (auth required) |
+| `GET /users/me/library` | "My saved patterns" | Pattern list (auth required) |
+| `GET /projects` | "My WIP projects" | Project list (auth required) |
 
 **Analogy for REST:** think of URLs as addresses for resources. `GET /patterns/search` is
 like calling a library's phone number and saying "search for X." The library (back end)
@@ -166,24 +176,30 @@ This is the answer to the classic "walk me through what happens" question.
 GET http://localhost:8000/patterns/semantic-search?q=cozy+winter+sweater
 ```
 
-**Step 3:** The FastAPI back end receives the request. It checks Redis: "Have I answered
-this exact query recently?"
-- If **yes (cache hit):** return the saved JSON immediately. Super fast.
+**Step 3:** The FastAPI back end receives the request. It checks Redis: "Have I computed the
+full ranked list for this query + filters recently?"
+- If **yes (cache hit):** slice the cached list for the requested page. Super fast.
 - If **no (cache miss):** keep going.
 
-**Step 4 (cache miss):** Convert "cozy winter sweater" into a 384-number vector (embedding)
-using the local AI model.
+**Step 4 (cache miss) — Stage 1, hybrid retrieval:** Three search legs run in parallel inside
+PostgreSQL:
+- **Semantic:** embed the query, find nearest neighbors via pgvector
+- **Keyword:** full-text search (BM25) on the `search_vector` column
+- **Designer:** trigram similarity on designer names (catches "Petite Knit" → PetiteKnit)
+Scores are fused with weights (0.6 / 0.25 / 0.15) → top 60 candidates.
 
-**Step 5:** Ask PostgreSQL: "What patterns have embeddings closest to this vector?" It uses
-the pgvector extension and the IVFFlat index to answer quickly.
+**Step 5 — Stage 2, reranking:** A cross-encoder scores each (query, pattern) pair together
+and reorders the candidates. Returns up to 50 results with `rerank_score` and relevance labels.
 
-**Step 6:** Save the result in Redis for 30 minutes.
+**Step 6:** Save the full ranked list in Redis for 30 minutes (keyed by query + filters).
 
-**Step 7:** Send the result back as JSON to the front end.
+**Step 7:** Slice the first page (`offset=0, limit=10`) and send as JSON to the front end.
 
-**Step 8:** React renders a `PatternCard` component for each pattern in the result.
+**Step 8:** React renders a `PatternCard` for each pattern, with relevance bars and labels.
+Page 2 is a cache hit — no recompute.
 
-That's the whole journey. Practice saying this out loud until it's fluent.
+That's the whole journey. For the deep dive, read `10-hybrid-search-and-reranking.md`.
+Practice saying this out loud until it's fluent.
 
 ---
 
@@ -258,37 +274,58 @@ woolly/
 ├── README.md                 # how to run it
 │
 ├── backend/                  # Python / FastAPI
-│   ├── Dockerfile            # recipe to build the backend container
-│   ├── requirements.txt      # Python dependencies
+│   ├── Dockerfile
+│   ├── requirements.txt
 │   └── app/
-│       ├── main.py           # server entrypoint, startup logic
-│       ├── config.py         # reads env vars into a Settings object
+│       ├── main.py           # entrypoint, lifespan (2 AI models + scheduler)
+│       ├── config.py         # env vars → Settings
+│       ├── scheduler.py      # 24h incremental re-seed
 │       ├── api/
-│       │   └── patterns.py   # the search endpoints (routes)
+│       │   ├── patterns.py   # search, save, filters
+│       │   ├── projects.py   # project CRUD
+│       │   └── users.py      # library endpoint
+│       ├── auth/
+│       │   ├── routes.py     # register, login, logout, me
+│       │   ├── security.py   # bcrypt + JWT
+│       │   └── dependencies.py # get_current_user
 │       ├── services/
-│       │   ├── ravelry_client.py   # talks to Ravelry
-│       │   └── embedding_service.py # runs the AI model
+│       │   ├── ravelry_client.py
+│       │   ├── embedding_service.py  # bi-encoder (stage 1)
+│       │   ├── reranking_service.py  # cross-encoder (stage 2)
+│       │   └── seeding.py            # fetch, embed, upsert, clear cache
 │       ├── search/
-│       │   └── semantic_search.py  # pgvector query
+│       │   ├── pipeline.py         # orchestrates hybrid → rerank
+│       │   ├── hybrid_search.py    # vector + BM25 + designer fusion
+│       │   ├── semantic_search.py  # pure vector (fallback)
+│       │   └── filters.py          # SQL filter helpers
 │       ├── cache/
-│       │   └── redis_client.py     # Redis helpers
+│       │   └── redis_client.py
 │       └── db/
-│           ├── models.py     # the Pattern database table definition
-│           ├── session.py    # database connection management
-│           └── init_db.py    # creates tables on startup
+│           ├── models.py     # Pattern, User, Project, SavedPattern, SeedRun
+│           ├── session.py
+│           └── init_db.py    # pgvector, full-text, trigram indexes
 │
 └── frontend/                 # React / TypeScript / Vite
-    ├── Dockerfile            # recipe to build the frontend container
-    ├── package.json          # JavaScript dependencies
+    ├── Dockerfile
+    ├── package.json
     └── src/
-        ├── App.tsx           # root component (search page)
-        ├── api/client.ts     # typed fetch wrapper
-        ├── styles.css        # the whole design system
-        └── components/
-            ├── SearchBar.tsx
-            ├── PatternCard.tsx
-            ├── Badge.tsx
-            └── SkeletonCard.tsx
+        ├── App.tsx           # React Router, providers, routes
+        ├── api/client.ts     # typed fetch wrapper (auth, search, projects)
+        ├── auth/
+        │   ├── AuthContext.tsx
+        │   └── SavedPatternsContext.tsx
+        ├── pages/
+        │   ├── Home.tsx      # search + filters + pagination
+        │   ├── Library.tsx   # saved patterns (protected)
+        │   ├── Projects.tsx  # WIP tracker (protected)
+        │   ├── StitchCounter.tsx
+        │   ├── Login.tsx / SignUp.tsx
+        │   └── GridMaker.tsx
+        ├── components/
+        │   ├── SearchBar.tsx, FilterBar.tsx, PatternCard.tsx
+        │   ├── Nav.tsx, ProtectedRoute.tsx, SkeletonCard.tsx
+        │   └── ...
+        └── styles.css
 ```
 
 Each folder is a **concern** (a responsibility). Notice how the back end organizes by what
@@ -301,12 +338,13 @@ it makes the code much easier to navigate, test, and change.
 ## Interview questions for this topic
 
 **Q: Walk me through your system architecture.**
-A: "Woolly is a monorepo with a React front end and a FastAPI back end. When a user
-searches, the front end sends an HTTP GET request to the back end. The back end checks a
-Redis cache — cache hit returns instantly. On a miss, it embeds the query using a local
-sentence-transformers model and queries PostgreSQL via pgvector for the nearest-neighbor
-patterns. Results are cached and returned as JSON. Everything runs in Docker containers
-orchestrated by docker-compose."
+A: "Woolly is a monorepo with a React front end and a FastAPI back end. Search uses a
+two-stage pipeline: hybrid retrieval combining pgvector semantic search, PostgreSQL
+full-text BM25, and designer trigram matching, then cross-encoder reranking on the top
+candidates. The full ranked list is cached in Redis per query and filters; pagination
+slices that cache. Auth uses JWT in httpOnly cookies for saved patterns and project
+tracking. Two local AI models load at startup. A background scheduler re-seeds patterns
+every 24 hours. Everything runs in Docker via docker-compose."
 
 **Q: Why a monorepo?**
 A: "For a project at this scale with one developer, a monorepo keeps front end and back end

@@ -1,9 +1,11 @@
 # 03 — Semantic Search & Embeddings
 
-**The star feature: how Woolly understands meaning, not just words.**
+**The foundation: how Woolly turns text into meaning-coordinates — and how that fits into
+the larger hybrid + reranking pipeline.**
 
-This is the most important topic to understand deeply. It's the whole point of the project,
-and it's what interviewers will probe hardest. Read this twice.
+This is still a must-know topic. Embeddings power the semantic leg of hybrid search, and
+understanding bi-encoders vs cross-encoders is essential for explaining the full pipeline.
+Read `10-hybrid-search-and-reranking.md` after this file for the complete picture.
 
 ---
 
@@ -131,11 +133,16 @@ than calling an API" — and the quality gap isn't worth the trade-offs for this
 
 ## The singleton pattern: load once, share forever
 
-Loading the model takes 3-5 seconds. If you loaded it per search request, every search
-would be 5 seconds slow. That's unacceptable.
+Loading the bi-encoder takes 3-5 seconds. The cross-encoder takes another 3-5 seconds. If
+you loaded either per search request, every search would be painfully slow.
 
-Solution: load it **once at startup** and share that one loaded model across all requests.
-This is the **singleton pattern** — one instance, shared globally.
+Solution: load both **once at startup** and share across all requests. This is the
+**singleton pattern** — one instance, shared globally. Woolly uses it in two places:
+
+| Model | File | Purpose |
+|---|---|---|
+| Bi-encoder (`all-MiniLM-L6-v2`) | `embedding_service.py` | Embed queries and patterns (stage 1) |
+| Cross-encoder (`ms-marco-MiniLM-L-6-v2`) | `reranking_service.py` | Score query-document pairs (stage 2) |
 
 ```python
 _model = None
@@ -253,44 +260,28 @@ Ravelry's rate limiter. Thoughtful, not just grabbing everything as fast as poss
 
 ---
 
-## The live search flow: step by step
+## The live search flow: where semantic search fits today
 
-Once patterns are seeded, this is what happens on every search:
+Semantic search is no longer the only search path. It's one leg of hybrid retrieval, and
+the fallback when keyword and designer legs have no matches. But the core pgvector query
+is the same:
 
 ```python
-def semantic_search(db: Session, query: str, limit: int = 10) -> list[dict]:
-    # Step 1: convert the user's query to an embedding
+def semantic_search(db, query, limit=10, craft=None, difficulty=None, free=None, category=None):
     query_vector = embed_text(query)
-    # query_vector is now [0.12, -0.34, 0.91, ...] — 384 numbers
-
-    # Step 2: tell PostgreSQL to check more index clusters (better recall)
-    db.execute(text("SET LOCAL ivfflat.probes = 10"))
-
-    # Step 3: find patterns with the smallest cosine distance to the query vector
+    db.execute(text(f"SET LOCAL ivfflat.probes = {IVFFLAT_PROBES}"))
     distance = Pattern.embedding.cosine_distance(query_vector)
-    rows = (
-        db.query(Pattern, distance.label("distance"))
-        .filter(Pattern.embedding.isnot(None))  # only seeded patterns
-        .order_by(distance)                     # closest first
-        .limit(limit)                           # top N
-        .all()
-    )
-
-    # Step 4: format results, convert distance to similarity score
-    results = []
-    for pattern, dist in rows:
-        results.append({
-            "name": pattern.name,
-            "similarity_score": round(1.0 - float(dist), 4),  # 0-1, higher = better
-            # ... other fields
-        })
-    return results
+    q = db.query(Pattern, distance.label("distance")).filter(Pattern.embedding.isnot(None))
+    # filters applied in SQL before ranking ...
+    rows = q.order_by(distance).limit(limit).all()
 ```
 
-See the actual code at: `backend/app/search/semantic_search.py`
+In production, this function is called:
+1. As the **semantic leg** inside `hybrid_search.py` (top 100 candidates)
+2. As a **fallback** when keyword and designer legs return zero matches
+3. Never as the sole search path (unless the fallback triggers)
 
-The `<=>` operator (cosine distance) is provided by pgvector. It's what makes this
-whole thing work inside regular PostgreSQL.
+See: `backend/app/search/semantic_search.py` and `10-hybrid-search-and-reranking.md`
 
 ---
 
@@ -331,28 +322,58 @@ means all similarity scores are in a clean 0-to-1 range that's easy to reason ab
 
 ---
 
+## Bi-encoder vs cross-encoder — the key distinction
+
+Woolly uses **two different kinds** of AI models. Interviewers will ask about this.
+
+**Bi-encoder** (embedding model — `all-MiniLM-L6-v2`):
+- Embeds query and document *separately* into vectors
+- Compares vectors with cosine similarity
+- Fast — can run over the entire corpus
+- Used in stage 1 (hybrid retrieval)
+
+**Cross-encoder** (reranker — `ms-marco-MiniLM-L-6-v2`):
+- Takes query and document *together* as one input
+- Outputs a single relevance score
+- Slow — only feasible on ~60 candidates
+- Used in stage 2 (reranking)
+
+**Analogy:** the bi-encoder is speed-dating (quick first impressions at scale). The
+cross-encoder is a deep conversation (accurate but you can only do it with a few people).
+
+See `reranking_service.py` and `10-hybrid-search-and-reranking.md` for the full pipeline.
+
+---
+
 ## What makes this technically impressive (interview framing)
 
 If you've internalized all of the above, frame it this way in an interview:
 
-> "Instead of keyword matching, I convert both patterns and search queries into 384-
-> dimensional vector embeddings using a locally-run sentence-transformers model. The
-> embedding model was trained to place semantically similar text geometrically close in
-> vector space. I store embeddings in PostgreSQL using pgvector, and at query time I
-> embed the user's query with the same model and find the nearest-neighbor patterns using
-> cosine similarity. This means 'cozy winter sweater' can surface 'chunky ribbed pullover
-> in the round' even though they share no words."
+> "I built a two-stage search pipeline. Stage 1 uses a bi-encoder to embed queries and
+> patterns into 384-dimensional vectors, combined with PostgreSQL full-text search and
+> designer trigram matching in a weighted hybrid retrieval step. Stage 2 uses a cross-encoder
+> that scores query-document pairs together on the top candidates — much more accurate than
+> vector similarity alone. Both models run locally in Docker with no external API dependency.
+> This means 'cozy winter sweater' surfaces 'chunky ribbed pullover in the round' even though
+> they share no words, while 'Petite Knit' still finds that designer's patterns exactly."
 
-That answer signals: you understand AI/ML concepts, you made conscious infrastructure
-decisions (local vs. API), you can explain the math intuitively, and you connect the
-technical choice to the product goal.
+That answer signals: you understand AI/ML concepts at depth (bi-encoder vs cross-encoder),
+you made conscious infrastructure decisions (local vs API, hybrid vs pure semantic), and you
+connect technical choices to product goals.
 
 ---
 
 ## Interview questions for this topic
 
 **Q: Explain how your semantic search works.**
-A: See the framing paragraph directly above. Practice it verbatim.
+A: See the framing paragraph directly above — but emphasize it's now one leg of a hybrid
+pipeline with cross-encoder reranking on top. Don't describe it as pure vector search.
+
+**Q: What is the difference between a bi-encoder and a cross-encoder?**
+A: "A bi-encoder embeds query and document separately, then compares vectors — fast and
+scalable, good for finding candidates. A cross-encoder scores them together — slow but much
+more accurate, only feasible on a small pool. Woolly uses the bi-encoder for hybrid
+retrieval and the cross-encoder for reranking the top 60 candidates."
 
 **Q: What is an embedding/vector?**
 A: "A vector is a list of numbers that represents the meaning of a piece of text.

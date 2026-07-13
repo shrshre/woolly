@@ -7,9 +7,9 @@
 ## Why caching exists
 
 Every search in Woolly involves work that takes time:
-- Embedding the query with the AI model: ~20ms
-- Querying PostgreSQL via pgvector: ~10ms
-- Total: ~30-50ms (fine, but not free)
+- Stage 1 hybrid retrieval: embed query + 3 SQL legs — ~50-100ms
+- Stage 2 cross-encoder reranking on 60 pairs: ~200-500ms on CPU
+- Total first search: ~300-600ms (acceptable, but not free)
 
 If 100 users all search "beginner hat" at roughly the same time, why do 100 rounds of that
 same work? The answer is 30-50ms × 100 = 3-5 seconds of unnecessary computation. All 100
@@ -62,26 +62,27 @@ Step 2: RETURN immediately    Step 2: COMPUTE the real answer
 Code (simplified):
 
 ```python
-async def semantic_search_patterns(q: str, ...):
+async def semantic_search_patterns(q, craft, difficulty, free, category, offset, limit, ...):
     query = q.strip()
-    
-    # Step 1: Check cache
-    cache_key = semantic_cache_key(query)   # "semantic:cozy winter sweater"
+
+    # Step 1: Check cache (keyed by query + all active filters)
+    cache_key = semantic_cache_key(query, craft=craft, difficulty=difficulty, free=free, category=category)
     cached = await get_cached(cache_key)
     if cached is not None:
-        return SemanticSearchResult.model_validate_json(cached)  # HIT: done!
+        full = json.loads(cached)  # HIT: full ranked list already computed
+    else:
+        full = run_search_pipeline(db, query, craft=craft, ...)  # MISS: run pipeline
+        await set_cached(cache_key, json.dumps(full), settings.semantic_cache_ttl_seconds)
 
-    # Step 2: Miss — compute the real answer
-    rows = run_semantic_search(db, query, limit=limit)
-
-    # Step 3: Save to cache for next time
-    result = SemanticSearchResult(...)
-    await set_cached(cache_key, result.model_dump_json(), settings.semantic_cache_ttl_seconds)
-    
-    return result
+    # Step 2: Slice the page from the cached full list
+    page = full[offset : offset + limit]
+    return SemanticSearchResult(query=query, patterns=page, total=len(full))
 ```
 
-See the actual code at: `backend/app/api/patterns.py` lines 89-115
+**Key design:** the cache stores the **full ranked list** (up to 50 results), not individual
+pages. Page 2, 3, 4 are all cache hits — just different slices of the same list.
+
+See the actual code at: `backend/app/api/patterns.py`
 
 ---
 
@@ -98,19 +99,20 @@ Woolly's cache key functions:
 def search_cache_key(query: str) -> str:
     return f"patterns:search:{query.strip().lower()}"
 
-def semantic_cache_key(query: str) -> str:
-    return f"semantic:{query.strip().lower()}"
+def semantic_cache_key(query: str, **filters) -> str:
+    key = f"semantic:{query.strip().lower()}"
+    active = {k: v for k, v in sorted(filters.items()) if v is not None}
+    if active:
+        key += ":" + ":".join(f"{k}={str(v).lower()}" for k, v in active.items())
+    return key
 ```
 
 Examples:
-- `"COZY WINTER SWEATER"` → `"semantic:cozy winter sweater"` (lowercased)
-- `"  beginner hat  "` → `"semantic:beginner hat"` (stripped)
+- `"COZY WINTER SWEATER"` → `"semantic:cozy winter sweater"`
+- `"cozy sweater"` + craft=knitting + free=true → `"semantic:cozy sweater:craft=knitting:free=true"`
 
-The `.strip().lower()` normalization means "Cozy Winter Sweater" and "cozy winter sweater"
-hit the same cache key — they're the same query and should get the same result.
-
-The prefix (`patterns:search:` vs `semantic:`) separates the two different kinds of cache
-entries so they don't collide.
+Different filter combinations get different cache entries — correct, because the ranked
+list changes when filters change.
 
 ---
 
@@ -121,11 +123,16 @@ Woolly has two caches with different expiry times:
 | Cache | Key prefix | TTL | Reason |
 |---|---|---|---|
 | Ravelry keyword search | `patterns:search:` | **3600s (1 hour)** | Ravelry data changes rarely; longer TTL = more cache hits |
-| Semantic search results | `semantic:` | **1800s (30 min)** | Slightly more responsive to corpus changes (new patterns seeded) |
+| Semantic/hybrid search results | `semantic:` | **1800s (30 min)** | Slightly more responsive to corpus changes (new patterns seeded) |
 
 **Why any TTL at all?** The cache can't live forever because:
 - New patterns get seeded into the database → old cached results don't include them
 - Pattern data on Ravelry can change (price, description) → cached data could go stale
+
+**Cache invalidation on seed:** When patterns are seeded (manual or scheduled), Woolly
+clears all search caches immediately via `clear_search_caches()` in `redis_client.py`.
+Newly seeded patterns are discoverable right away — users don't wait for TTL expiry.
+If clearing fails, stale entries expire naturally (graceful degradation).
 
 **How to pick a TTL:** ask "how often does the underlying data change, and how much would
 users be hurt by seeing stale data?" Pattern metadata changes infrequently (hours or days),
@@ -192,8 +199,8 @@ This produces log output like:
 ```
 
 You can verify the cache is working by running two identical searches and watching the logs.
-The first search shows MISS, the second shows HIT. This is how the Week 1 "definition of
-done" was verified.
+The first search shows MISS, the second shows HIT — verify by running two identical searches
+and watching the logs.
 
 ---
 
@@ -233,10 +240,17 @@ Using the synchronous version would block the whole server during every Redis ca
 ## Interview questions for this topic
 
 **Q: How does your caching layer work?**
-A: "I use cache-aside with Redis. On every search, I first check Redis with a key of
-`semantic:{normalized-query}`. A cache hit returns the stored JSON immediately — no AI
-model, no database. A miss computes the result, caches it for 30 minutes, then returns
-it. Subsequent identical searches are instant."
+A: "Cache-aside with Redis. On every search, I check Redis with a key of
+`semantic:{normalized-query}:{filters}`. A cache hit returns the pre-computed full ranked
+list — no AI models, no database. I slice the requested page from that list. A miss runs
+the two-stage pipeline, caches the full list for 30 minutes, then returns the page.
+Pagination is free after the first search. Seeding clears all search caches so new patterns
+are immediately discoverable."
+
+**Q: Why cache the full result list instead of each page separately?**
+A: "Relevance ranking is computed once for the whole result set. Caching the full list means
+page 2 is a cache hit with just a slice — no recompute. It also guarantees consistent
+ordering across pages. The list is capped at 50 results, so memory per entry is bounded."
 
 **Q: What is cache-aside?**
 A: "Cache-aside (or lazy loading) means the application manages the cache manually: check

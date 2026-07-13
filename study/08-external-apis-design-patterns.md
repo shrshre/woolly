@@ -359,9 +359,9 @@ move to OAuth, I write a new class that implements the same interface and swap i
 
 **Q: What is a singleton and where does Woolly use one?**
 A: "A singleton is a class/object where only one instance exists for the lifetime of the
-application. Woolly uses it for the embedding model: loading takes 3-5 seconds, so we load
-it once at startup and share it across all requests. The Redis client connection is also a
-singleton — one connection pool shared by all requests."
+application. Woolly uses it for both AI models — the bi-encoder and cross-encoder — each
+taking 3-5 seconds to load, so we load once at startup and share across all requests. The
+Redis client connection is also a singleton — one connection pool shared by all requests."
 
 **Q: What is the 12-factor app?**
 A: "A methodology for building deployable applications. The relevant factor for Woolly is

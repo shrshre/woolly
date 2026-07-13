@@ -204,8 +204,10 @@ runs the cleanup code in `get_db` (closing the session).
 ## Startup lifecycle — loading things before the first request
 
 Some things should happen *once* when the server starts, not on every request:
-- Enable pgvector, create the database tables
-- Load the AI embedding model (takes 3-5 seconds)
+- Enable pgvector, create tables, set up full-text and trigram indexes
+- Load the bi-encoder embedding model (takes 3-5 seconds)
+- Load the cross-encoder reranking model (takes 3-5 seconds)
+- Start the background scheduler (24h incremental re-seed)
 
 FastAPI provides a **lifespan** hook for this:
 
@@ -213,20 +215,19 @@ FastAPI provides a **lifespan** hook for this:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        init_db()           # create tables, enable pgvector extension
+        init_db()           # pgvector, tables, FTS, trigram indexes
     except Exception as exc:
         logger.warning("Database init failed; semantic search will be unavailable.")
-    get_model()             # load the AI model — done once, shared forever
+    get_model()             # bi-encoder — once, shared forever
+    get_reranker()          # cross-encoder — once, shared forever
+    start_scheduler()       # 24h incremental re-seed
     yield                   # server is running — handle requests
-    # cleanup code goes here (after yield, when server shuts down)
+    stop_scheduler()        # cleanup on shutdown
 ```
 
-The `yield` is the dividing line: everything *before* yield runs at startup; everything
-*after* yield runs at shutdown; the server handles requests *while* yielded.
-
-**Why pre-load the model?** The `all-MiniLM-L6-v2` model takes 3-5 seconds to load. If
-you loaded it per request, the first search after every server restart would be 5 seconds
-slow. Loading it once at startup means all requests get a pre-warmed model instantly.
+**Why pre-load both models?** Each takes 3-5 seconds to load. Loading per request would
+make every search painfully slow. Both use the singleton pattern — see
+`embedding_service.py` and `reranking_service.py`.
 
 ---
 
@@ -283,7 +284,7 @@ consumers of the API."
 ## How all the backend pieces fit together
 
 ```
-incoming HTTP request: GET /patterns/semantic-search?q=cozy+sweater
+incoming HTTP request: GET /patterns/semantic-search?q=cozy+sweater&craft=knitting
          │
          ▼
    main.py (FastAPI app)
@@ -291,22 +292,28 @@ incoming HTTP request: GET /patterns/semantic-search?q=cozy+sweater
          ▼
    api/patterns.py — semantic_search_patterns()
          │
-         ├─→ redis_client.get_cached()       [cache check]
+         ├─→ redis_client.get_cached()       [cache check — full ranked list]
          │        │ miss
          │        ▼
-         ├─→ semantic_search.py              [embed + query]
+         ├─→ search/pipeline.py              [orchestrator]
          │        │
-         │        ├─→ embedding_service.embed_text()    [AI model]
-         │        └─→ db session + pgvector query       [database]
+         │        ├─→ hybrid_search.py       [stage 1: vector + BM25 + designer]
+         │        │        ├─→ embedding_service.embed_text()
+         │        │        └─→ PostgreSQL (pgvector + tsvector + pg_trgm)
+         │        │
+         │        └─→ reranking_service.rerank()  [stage 2: cross-encoder]
          │
-         ├─→ redis_client.set_cached()       [save result]
+         ├─→ redis_client.set_cached()       [save full list]
          │
-         └─→ SemanticSearchResult (Pydantic model) → JSON response
+         └─→ slice page[offset:offset+limit] → SemanticSearchResult → JSON
 ```
 
-Each module has one job. The route handler (`patterns.py`) orchestrates but doesn't do
-the detailed work itself. The detailed work lives in `semantic_search.py`,
-`embedding_service.py`, and `redis_client.py`. This is **separation of concerns**.
+Woolly also has separate routers for auth (`auth/routes.py`), projects (`api/projects.py`),
+and users/library (`api/users.py`). Protected routes inject `get_current_user` via
+`Depends()` — see `11-authentication-and-user-data.md`.
+
+Each module has one job. The route handler orchestrates; the pipeline delegates to
+hybrid search and reranking. This is **separation of concerns**.
 
 ---
 
@@ -337,7 +344,8 @@ app settings, and the Ravelry client into route handlers. This makes routes easi
 (you can swap real dependencies for fakes) and eliminates boilerplate."
 
 **Q: What happens when the server starts up?**
-A: "The lifespan hook runs: first it initializes the database (creates tables, enables
-pgvector), then it pre-loads the sentence-transformers embedding model. Both happen once at
-startup so no request ever waits for that overhead. If the database init fails, the server
-still starts — it just logs a warning and skips semantic search."
+A: "The lifespan hook runs: database init (pgvector, tables, full-text and trigram indexes),
+then pre-loads both AI models — the bi-encoder for embeddings and the cross-encoder for
+reranking — then starts a background scheduler that re-seeds patterns every 24 hours.
+If database init fails, the server still starts with a warning. On shutdown, the scheduler
+stops cleanly."
