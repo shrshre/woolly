@@ -318,9 +318,10 @@ raw_data JSONB
 `JSONB` is PostgreSQL's binary JSON type. It stores the entire Ravelry API response as-is.
 
 **Why store the whole response?** Ravelry's API returns ~50 fields per pattern. Woolly
-only uses a dozen of them now. But in the future, it might need `yarn_weight`, `gauge`,
-`needle_size`, etc. If those aren't stored, Woolly would have to re-fetch everything from
-Ravelry. With `raw_data`, it can just run a new pass over what's already there.
+promotes some to first-class columns, and still reads nested fields like `yarn_weight` and
+`pattern_needle_sizes` from JSON inside `build_pattern_text`. Keeping `raw_data` means you
+can change the embedding text (or add columns later) and **re-embed without re-fetching**
+Ravelry — just run `re_embed_existing()`.
 
 `JSONB` also supports SQL queries and indexing on nested fields:
 ```sql

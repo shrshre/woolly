@@ -80,7 +80,7 @@ def hybrid_search(
     semantic_weight: float = SEMANTIC_WEIGHT,
     keyword_weight: float = KEYWORD_WEIGHT,
     designer_weight: float = DESIGNER_WEIGHT,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     """Combine vector similarity, BM25 keyword ranking, and designer trigram
     matching into a single candidate pool.
 
@@ -93,11 +93,14 @@ def hybrid_search(
 
     Falls back to pure semantic search only when both the keyword and designer
     legs are empty (niche natural-language queries where they add no signal).
+
+    Returns (results, search_type) where search_type is "hybrid" or "semantic"
+    depending on which path actually ran, for analytics logging.
     """
     keyword_n, designer_n = _leg_match_counts(db, query, craft, difficulty, free, category)
     if keyword_n == 0 and designer_n == 0:
         logger.info("Hybrid search for %r: no keyword/designer matches, semantic fallback.", query)
-        return semantic_search(db, query, limit, craft, difficulty, free, category)
+        return semantic_search(db, query, limit, craft, difficulty, free, category), "semantic"
 
     filter_clause, params = build_filter_clause(craft, difficulty, free, category, prefix="p.")
     inner_filter = filter_clause.replace("p.", "")
@@ -228,4 +231,4 @@ def hybrid_search(
     ]
 
     logger.info("Hybrid search for %r returned %d results.", query, len(results))
-    return results
+    return results, "hybrid"

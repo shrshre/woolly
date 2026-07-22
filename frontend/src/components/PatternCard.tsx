@@ -1,11 +1,21 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import type { PatternSummary } from "../api/client";
+import { logInteraction, type PatternSummary } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { useSavedPatterns } from "../auth/SavedPatternsContext";
 import { Badge, difficultyVariant } from "./Badge";
 
-export function PatternCard({ pattern }: { pattern: PatternSummary }) {
+// searchEventId/position are present only when rendered from search results;
+// absent on the Library page, where interaction logging is skipped.
+export function PatternCard({
+  pattern,
+  searchEventId,
+  position,
+}: {
+  pattern: PatternSummary;
+  searchEventId?: number | null;
+  position?: number;
+}) {
   const { user } = useAuth();
   const { savedIds, toggleSave } = useSavedPatterns();
   const [showSignInPrompt, setShowSignInPrompt] = useState(false);
@@ -13,12 +23,32 @@ export function PatternCard({ pattern }: { pattern: PatternSummary }) {
   const saved = savedIds.has(pattern.id);
   const difficulty = difficultyVariant(pattern.difficulty);
 
+  const canLog = searchEventId != null && position != null;
+
   function handleSaveClick() {
     if (!user) {
       setShowSignInPrompt(true);
       return;
     }
+    // Log only the save action, not unsave; fire before the async toggle.
+    if (!saved && canLog) {
+      logInteraction(pattern.id, {
+        search_event_id: searchEventId!,
+        position: position!,
+        action: "save",
+      });
+    }
     void toggleSave(pattern.id);
+  }
+
+  function handleRavelryClick() {
+    if (canLog) {
+      logInteraction(pattern.id, {
+        search_event_id: searchEventId!,
+        position: position!,
+        action: "ravelry_click",
+      });
+    }
   }
 
   return (
@@ -60,6 +90,7 @@ export function PatternCard({ pattern }: { pattern: PatternSummary }) {
                 href={pattern.ravelry_url}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={handleRavelryClick}
               >
                 View on Ravelry <i className="ti ti-external-link" aria-hidden="true"></i>
               </a>

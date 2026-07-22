@@ -272,6 +272,21 @@ body {
   text-align: center;
 }
 
+.results-empty {
+  text-align: center;
+  padding: 1.5rem 0;
+}
+
+.results-empty-hint {
+  font-size: 14px;
+  color: #6b4c3b;
+  margin: 0 0 12px;
+}
+
+.results-empty .chips {
+  margin-top: 0;
+}
+
 .results-list.is-paging {
   opacity: 0.5;
   transition: opacity 0.1s ease;

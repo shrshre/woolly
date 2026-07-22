@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ARRAY, Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
+from sqlalchemy import ARRAY, Boolean, DateTime, Enum, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -101,3 +101,48 @@ class Pattern(Base):
     raw_data: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class SearchEvent(Base):
+    """One semantic-search request — the raw feed for search analytics.
+
+    Written on both the cache-hit and cache-miss paths so cache_hit_rate is
+    measurable. top_result_id is the internal Pattern.id (not ravelry_id) of
+    the first result in the full ranked list for the query.
+    """
+
+    __tablename__ = "search_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    filters: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    result_count: Mapped[int | None] = mapped_column(Integer)
+    top_result_id: Mapped[int | None] = mapped_column(
+        ForeignKey("patterns.id", ondelete="SET NULL")
+    )
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    search_type: Mapped[str] = mapped_column(Text, server_default="hybrid")  # hybrid / semantic
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ResultInteraction(Base):
+    """A user action on a specific search result (save or Ravelry click).
+
+    position is 1-indexed and absolute across pages (offset + index + 1) so
+    save/click rates can be measured against rank.
+    """
+
+    __tablename__ = "result_interactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    search_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("search_events.id", ondelete="CASCADE")
+    )
+    pattern_id: Mapped[int] = mapped_column(ForeignKey("patterns.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)  # 'save' / 'ravelry_click'
+    rerank_score: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

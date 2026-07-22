@@ -1,5 +1,7 @@
 // Typed fetch wrapper for the Woolly backend.
 
+import { getSessionId } from "../utils/session";
+
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
 export interface PatternSummary {
@@ -23,6 +25,8 @@ export interface PatternSearchResult {
   query: string;
   patterns: PatternSummary[];
   total: number | null;
+  /** Id of the logged search event, for attributing later save/click interactions. */
+  search_event_id?: number | null;
 }
 
 export class ApiError extends Error {
@@ -69,7 +73,29 @@ export function searchPatterns(
   if (filters.difficulty) params.set("difficulty", filters.difficulty);
   if (filters.free !== undefined) params.set("free", String(filters.free));
   if (filters.category) params.set("category", filters.category);
+  params.set("session_id", getSessionId());
   return request(`/patterns/semantic-search?${params.toString()}`);
+}
+
+export type InteractionAction = "save" | "ravelry_click";
+
+/** Log a save/click on a search result. Fire-and-forget; uses keepalive so the
+ *  request survives a tab closing (e.g. a Ravelry link opening in a new tab). */
+export function logInteraction(
+  ravelryId: number,
+  body: { search_event_id: number; position: number; action: InteractionAction }
+): void {
+  try {
+    void fetch(`${API_URL}/patterns/${ravelryId}/interactions`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // Analytics is best-effort; never let it disrupt the UI.
+  }
 }
 
 export function fetchFilterOptions(): Promise<{ crafts: string[]; categories: string[] }> {

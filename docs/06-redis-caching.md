@@ -79,7 +79,8 @@ async def semantic_search_patterns(q, craft, difficulty, free, category, offset,
     return SemanticSearchResult(query=query, patterns=page, total=len(full))
 ```
 
-**Key design:** the cache stores the **full ranked list** (up to 50 results), not individual
+**Key design:** the cache stores a JSON **envelope** — the full ranked list (up to 50
+results) plus `top_result_id`, `search_type`, and `latency_ms` — not individual
 pages. Page 2, 3, 4 are all cache hits — just different slices of the same list.
 
 See the actual code at: `backend/app/api/patterns.py`

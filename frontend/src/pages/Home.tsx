@@ -26,6 +26,7 @@ export function Home() {
   const [patterns, setPatterns] = useState<PatternSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [searchEventId, setSearchEventId] = useState<number | null>(null);
   const [activeQuery, setActiveQuery] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -44,11 +45,13 @@ export function Home() {
       const res = await searchPatterns(trimmed, activeFilters, { offset: 0, limit: PAGE_SIZE });
       setPatterns(res.patterns);
       setTotal(res.total ?? res.patterns.length);
+      setSearchEventId(res.search_event_id ?? null);
       setActiveQuery(res.query);
       setPage(1);
     } catch (err) {
       setPatterns([]);
       setTotal(0);
+      setSearchEventId(null);
       setActiveQuery(null);
       setError(err instanceof ApiError ? err.message : "Could not reach the backend.");
     } finally {
@@ -66,6 +69,7 @@ export function Home() {
       });
       setPatterns(res.patterns);
       setTotal(res.total ?? total);
+      setSearchEventId(res.search_event_id ?? null);
       setPage(next);
       resultsRef.current?.scrollIntoView({ block: "start" });
     } catch (err) {
@@ -84,6 +88,49 @@ export function Home() {
     setFilters(next);
     // Re-run the current search from page one with the new filters, if there is one
     if (activeQuery || query.trim()) void runSearch(query || activeQuery || "", next);
+  }
+
+  // Actionable suggestions for a zero-result search, derived from the query and
+  // active filters — not a hardcoded message. Each becomes a clickable chip.
+  function emptyStateSuggestions(): { label: string; run: () => void }[] {
+    const suggestions: { label: string; run: () => void }[] = [];
+    const term = activeQuery ?? query;
+    const hasFilters = Object.values(filters).some((v) => v !== undefined && v !== "");
+
+    if (hasFilters) {
+      suggestions.push({
+        label: "Try removing your filters",
+        run: () => {
+          setFilters({});
+          void runSearch(term, {});
+        },
+      });
+    }
+
+    const words = term.trim().split(/\s+/).filter(Boolean);
+    if (words.length >= 3) {
+      const broader = words.slice(-2).join(" ");
+      suggestions.push({
+        label: `Search “${broader}”`,
+        run: () => {
+          setQuery(broader);
+          void runSearch(broader);
+        },
+      });
+    } else if (words.length === 2) {
+      // Two words: offer each on its own as a broader search.
+      for (const w of words) {
+        suggestions.push({
+          label: `Search “${w}”`,
+          run: () => {
+            setQuery(w);
+            void runSearch(w);
+          },
+        });
+      }
+    }
+
+    return suggestions;
   }
 
   return (
@@ -128,15 +175,47 @@ export function Home() {
           </p>
         )}
 
-        {!loading && !error && activeQuery && (
+        {!loading && !error && activeQuery && total === 0 && (
+          <div className="results-empty">
+            <p className="results-label">No patterns found for “{activeQuery}”</p>
+            {(() => {
+              const suggestions = emptyStateSuggestions();
+              if (suggestions.length === 0) {
+                return (
+                  <p className="results-empty-hint">
+                    Try describing your project a little differently, or check your spelling.
+                  </p>
+                );
+              }
+              return (
+                <>
+                  <p className="results-empty-hint">Try a broader search:</p>
+                  <div className="chips">
+                    {suggestions.map((s) => (
+                      <button key={s.label} type="button" className="chip" onClick={s.run}>
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+        {!loading && !error && activeQuery && total > 0 && (
           <>
             <p className="results-label">
               {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
             </p>
             <ul className={paging ? "results-list is-paging" : "results-list"}>
-              {patterns.map((p) => (
+              {patterns.map((p, i) => (
                 <li key={p.id}>
-                  <PatternCard pattern={p} />
+                  <PatternCard
+                    pattern={p}
+                    searchEventId={searchEventId}
+                    position={(page - 1) * PAGE_SIZE + i + 1}
+                  />
                 </li>
               ))}
             </ul>

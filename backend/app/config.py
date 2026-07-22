@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     # API
     cors_origins: str = "http://localhost:5173"
 
+    # Admin analytics. Placeholder gate until real auth roles exist: the
+    # /admin/analytics endpoint requires an X-Admin-Token header matching this
+    # value. Empty (the default) means the endpoint is closed to everyone.
+    admin_api_token: str = ""
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

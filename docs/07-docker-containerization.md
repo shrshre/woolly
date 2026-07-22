@@ -70,8 +70,13 @@ RUN pip install -r requirements.txt
 # Docker reuses the cached pip install step → faster rebuilds
 
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
-# Pre-download the AI model at BUILD time, not at runtime
+# Pre-download the bi-encoder at BUILD time, not at runtime
 # Without this, the first startup would download ~90MB while users wait
+
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+# Same warmup for the cross-encoder reranker (~90MB). Both models load into memory
+# during FastAPI lifespan; baking weights into the image avoids HuggingFace downloads
+# on every fresh container.
 
 COPY ./app /code/app
 # Copy your actual application code into the container

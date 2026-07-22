@@ -107,6 +107,19 @@ combined_score = (semantic_norm × 0.6 + keyword_norm × 0.25 + designer_norm ×
 semantic or keyword), the active weights are renormalized. A designer-only exact match isn't
 structurally capped at 0.15 — it can score 1.0 if it's the only signal.
 
+### Worked numeric example
+
+Suppose three patterns after max-normalization:
+
+| Pattern | semantic_norm | keyword_norm | designer_norm | Active weights | combined |
+|---|---|---|---|---|---|
+| A — vibe match only | 1.00 | — | — | 0.6 | **1.00** |
+| B — title keyword hit | 0.50 | 1.00 | — | 0.85 | (0.3+0.25)/0.85 ≈ **0.65** |
+| C — exact PetiteKnit | — | — | 1.00 | 0.15 | **1.00** |
+
+Without renormalization, C would score 0.15 and drown. With it, C can surface — then the
+cross-encoder decides whether "cardigan" in the query actually fits that pattern's text.
+
 Patterns appear in the final pool if they match *any* leg (OR logic), ranked by combined score.
 
 ### Semantic-only fallback
@@ -272,6 +285,48 @@ Set up in `backend/app/db/init_db.py`:
 
 The `search_vector` column is auto-populated by a PostgreSQL trigger on INSERT/UPDATE from
 name + designer + description + tags.
+
+---
+
+## Stage 0: indexing (search starts before the user types)
+
+Without seeded embeddings and indexes, live search has nothing to retrieve.
+`backend/app/services/seeding.py` is the index builder:
+
+1. Audit row in `seed_runs`
+2. Optional `re_embed_existing()` from `raw_data` after changing `build_pattern_text`
+3. Collect IDs (full category×sort matrix, or incremental `sort=date`)
+4. Detail fetch → embed → upsert on `ravelry_id`
+5. `clear_search_caches()` so new patterns aren't hidden behind stale Redis envelopes
+
+Scheduler: every 24h, incremental seed (limit 500). Rate limit: 0.5s between Ravelry calls.
+
+---
+
+## Analytics tied to ranking
+
+Every search (cache hit or miss) writes `search_events`: query, filters, result_count,
+`top_result_id`, latency_ms, cache_hit, `search_type` (`hybrid` | `semantic`).
+
+Frontend keeps a `session_id` (localStorage). Saves / Ravelry clicks POST
+`result_interactions` with **absolute 1-indexed position** (`offset + index + 1`) so you
+can study click-through vs rank later.
+
+Admin: `GET /admin/analytics` behind `X-Admin-Token`. Interview signal: you instrumented
+quality, not only built a demo.
+
+---
+
+## Failure modes & design responses
+
+| Failure | Response |
+|---|---|
+| Reranker exception | Hybrid top-50 still returned |
+| Redis down | Fail open; every request is a miss |
+| Empty corpus / no embeddings | 503 with seed hint |
+| Niche NL query | Semantic fallback (`search_type=semantic`) |
+| Seed finished | Cache cleared — freshness over hit rate |
+| Analytics INSERT fails | Logged; search still 200 |
 
 ---
 

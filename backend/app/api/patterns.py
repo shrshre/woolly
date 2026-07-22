@@ -6,16 +6,19 @@ Week 2: /patterns/semantic-search — hybrid vector + BM25 search over seeded pa
 
 import json
 import logging
+import time
+import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.cache.redis_client import get_cached, search_cache_key, semantic_cache_key, set_cached
 from app.config import Settings, get_settings
-from app.db.models import Pattern, SavedPattern, User
-from app.db.session import get_db
+from app.db.models import Pattern, ResultInteraction, SavedPattern, SearchEvent, User
+from app.db.session import get_db, get_sessionmaker
 from app.search.pipeline import search as run_search_pipeline
 from app.services.ravelry_client import (
     PatternProvider,
@@ -80,6 +83,51 @@ class SemanticPatternSummary(PatternSummary):
 
 class SemanticSearchResult(PatternSearchResult):
     patterns: list[SemanticPatternSummary]  # type: ignore[assignment]
+    # Id of the logged search_events row, so the frontend can attribute later
+    # save/click interactions to the search that produced them. None if the
+    # analytics write failed (search itself still succeeds).
+    search_event_id: int | None = None
+
+
+def _log_search_event(
+    *,
+    session_id: str,
+    user_id: int | None,
+    query: str,
+    filters: dict,
+    result_count: int,
+    top_result_id: int | None,
+    latency_ms: int,
+    cache_hit: bool,
+    search_type: str,
+) -> int | None:
+    """Write one search_events row synchronously and return its id.
+
+    Synchronous (not BackgroundTasks) on purpose: the search response needs the
+    real FK id so result_interactions can reference it, and a background task
+    couldn't return the DB-generated id. It's a single fast INSERT on a fresh
+    session (never the request session, which is torn down after the response),
+    and any failure is logged and swallowed so analytics never 500s the search.
+    """
+    try:
+        with get_sessionmaker()() as session:
+            event = SearchEvent(
+                session_id=session_id,
+                user_id=user_id,
+                query=query,
+                filters=filters,
+                result_count=result_count,
+                top_result_id=top_result_id,
+                latency_ms=latency_ms,
+                cache_hit=cache_hit,
+                search_type=search_type,
+            )
+            session.add(event)
+            session.commit()
+            return event.id
+    except Exception:
+        logger.exception("Failed to log search event for %r; continuing.", query)
+        return None
 
 
 @router.get("/semantic-search", response_model=SemanticSearchResult)
@@ -91,6 +139,8 @@ async def semantic_search_patterns(
     difficulty: Literal["beginner", "intermediate", "advanced"] | None = Query(None),
     free: bool | None = Query(None, description="Filter: true for free patterns, false for paid"),
     category: str | None = Query(None, description="Filter: pattern category, e.g. Cardigan"),
+    session_id: str | None = Query(None, description="Anonymous browser session id, for analytics"),
+    user: User | None = Depends(get_current_user_optional),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> SemanticSearchResult:
@@ -98,16 +148,29 @@ async def semantic_search_patterns(
     if not query:
         raise HTTPException(status_code=400, detail="Query must not be empty.")
 
-    # The full relevance-ranked list (up to MAX_RESULTS) is computed once and
-    # cached per query+filters; pages are sliced from it, so "load more" is a
-    # cache hit with no recompute. total reflects the full result count.
+    # Search must never 500 for want of a session id.
+    session_id = session_id or str(uuid.uuid4())
+
+    # The full relevance-ranked list (up to MAX_RESULTS) plus its pipeline-time
+    # facts (top_result_id, search_type) are computed once and cached per
+    # query+filters as an envelope; pages are sliced from it, so "load more" is
+    # a cache hit with no recompute. total reflects the full result count.
     cache_key = semantic_cache_key(query, craft=craft, difficulty=difficulty, free=free, category=category)
+    started = time.perf_counter()
     cached = await get_cached(cache_key)
-    if cached is not None:
-        full = json.loads(cached)
+    cache_hit = cached is not None
+
+    if cache_hit:
+        envelope = json.loads(cached)
+        # Tolerate pre-Phase-4 cache entries that stored a bare list of results.
+        if isinstance(envelope, list):
+            envelope = {"results": envelope, "top_result_id": None, "search_type": "hybrid"}
+        # cache-hit latency is the (tiny) cost of fetching from Redis; a
+        # sub-millisecond hit still records as 1ms, never a misleading 0.
+        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
     else:
         try:
-            full = run_search_pipeline(
+            envelope = run_search_pipeline(
                 db, query, craft=craft, difficulty=difficulty, free=free, category=category
             )
         except Exception as exc:  # DB down, patterns table missing, etc.
@@ -117,19 +180,40 @@ async def semantic_search_patterns(
                 detail="Semantic search is unavailable. Has the database been seeded?",
             ) from exc
 
-        if not full and not any([craft, difficulty, free is not None, category]):
+        if not envelope["results"] and not any([craft, difficulty, free is not None, category]):
             raise HTTPException(
                 status_code=503,
                 detail="No embedded patterns found. Run scripts/seed_patterns.py first.",
             )
 
-        await set_cached(cache_key, json.dumps(full), settings.semantic_cache_ttl_seconds)
+        latency_ms = envelope["latency_ms"]
+        await set_cached(cache_key, json.dumps(envelope), settings.semantic_cache_ttl_seconds)
 
-    page = full[offset : offset + limit]
+    results = envelope["results"]
+    page = results[offset : offset + limit]
+
+    filters = {
+        k: v
+        for k, v in {"craft": craft, "difficulty": difficulty, "free": free, "category": category}.items()
+        if v is not None
+    }
+    search_event_id = _log_search_event(
+        session_id=session_id,
+        user_id=user.id if user else None,
+        query=query,
+        filters=filters,
+        result_count=len(page),
+        top_result_id=envelope.get("top_result_id"),
+        latency_ms=latency_ms,
+        cache_hit=cache_hit,
+        search_type=envelope.get("search_type", "hybrid"),
+    )
+
     return SemanticSearchResult(
         query=query,
         patterns=[SemanticPatternSummary(**row) for row in page],
-        total=len(full),
+        total=len(results),
+        search_event_id=search_event_id,
     )
 
 
@@ -203,3 +287,36 @@ async def unsave_pattern(
     if saved is not None:
         db.delete(saved)
         db.commit()
+
+
+class InteractionCreate(BaseModel):
+    search_event_id: int
+    position: int  # 1-indexed, absolute across pages
+    action: Literal["save", "ravelry_click"]
+
+
+@router.post("/{ravelry_id}/interactions", status_code=204)
+async def log_interaction(
+    ravelry_id: int,
+    body: InteractionCreate,
+    db: Session = Depends(get_db),
+) -> None:
+    """Record a save/click on a search result for analytics. Separate from
+    /save so the existing bookmark contract is untouched. Anonymous — anyone
+    can log interactions on their own search results."""
+    pattern = _get_pattern_or_404(db, ravelry_id)
+
+    # Ignore interactions referencing an unknown search (e.g. an expired/flushed
+    # event) rather than 500 on the FK violation.
+    if db.get(SearchEvent, body.search_event_id) is None:
+        return
+
+    db.add(
+        ResultInteraction(
+            search_event_id=body.search_event_id,
+            pattern_id=pattern.id,
+            position=body.position,
+            action=body.action,
+        )
+    )
+    db.commit()

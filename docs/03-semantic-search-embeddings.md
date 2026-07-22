@@ -100,6 +100,61 @@ close together — we just trust it to do that.
 
 ---
 
+## How a model "learns" (training vs inference)
+
+Interviewers mix these up on purpose. Know the difference cold.
+
+### Training (Woolly does **not** do this)
+
+Someone else (Microsoft / the HuggingFace community) already:
+
+1. Took millions of sentence pairs ("A dog runs" ↔ "A puppy is running" = similar).
+2. Adjusted millions of internal knobs (**weights**) until similar sentences got nearby
+   coordinates and dissimilar ones got far apart.
+3. Saved those knobs as a **pretrained model** file (~90MB).
+
+**Metaphor:** training is writing a textbook by studying for years. Woolly buys the
+finished textbook — it does not rewrite the chapters.
+
+### Inference (what Woolly does)
+
+At runtime Woolly only **runs** the frozen model:
+
+```
+text in → model → 384 floats out
+```
+
+No learning happens during a search. Same input → same embedding (given the model and
+`normalize_embeddings=True`).
+
+**Interview line:** "I use pretrained models for inference only — there is no training
+pipeline in this repo."
+
+---
+
+## What lives inside the model (intuition, not math)
+
+Woolly uses **transformers** via the `sentence-transformers` library. You do not need the
+equations — you need the story:
+
+1. Text is split into **tokens** (roughly words/subwords).
+2. Each token becomes a numeric representation.
+3. **Attention** lets every word look at every other word in the sentence — so "seamless"
+   can influence how "pullover" is understood in context.
+4. The model compresses the whole sentence into **one** 384-number vector.
+
+**Metaphor:** a book club. Every person (word) listens to every other person, then the
+group writes a single summary paragraph (the embedding). Short, but it captures the vibe
+of the whole discussion.
+
+You never implement attention from scratch here. You call:
+
+```python
+vector = get_model().encode(text, normalize_embeddings=True)
+```
+
+---
+
 ## The AI model: all-MiniLM-L6-v2
 
 Woolly uses a pre-trained model called **all-MiniLM-L6-v2** from the `sentence-transformers`
@@ -167,23 +222,30 @@ See the actual code at: `backend/app/services/embedding_service.py`
 
 ## Building the text to embed
 
-Not everything in the database is worth embedding. Woolly extracts the most meaningful
-text from each pattern and concatenates it into one string before embedding:
+Garbage in → garbage geometry. Woolly does **not** embed raw Ravelry JSON. It builds a
+deliberate string in `build_pattern_text`:
 
 ```python
 def build_pattern_text(pattern: dict) -> str:
+    raw = pattern.get("raw_data") or {}
     parts = [
-        pattern.get("name") or "",          # "Chunky Ribbed Pullover"
-        pattern.get("description") or "",   # long description text
-        " ".join(pattern.get("tags") or []) # "sweater ribbing seamless cozy"
+        pattern.get("name") or "",
+        pattern.get("designer") or "",
+        pattern.get("description") or "",
+        " ".join(pattern.get("tags") or []),
+        pattern.get("craft") or "",
+        pattern.get("difficulty") or "",
+        pattern.get("category") or "",
+        pattern.get("yarn_weight") or _yarn_weight_from_raw(raw),
+        pattern.get("needle_size") or _needle_sizes_from_raw(raw),
     ]
     return " ".join(part for part in parts if part).strip()
 ```
 
-Result: `"Chunky Ribbed Pullover A warm ribbed pullover worked seamlessly from the top down sweater ribbing seamless cozy"`
-
-This combined string is what gets embedded. The intuition: the richer and more complete
-the text, the better the embedding captures the pattern's true meaning.
+**Why so many fields?** Queries like `"worsted weight beginner hat"` or `"PetiteKnit
+cardigan"` need those signals in the vector — not only poetic description prose.
+`raw_data` (JSONB) keeps the full Ravelry payload so you can change this function later
+and **re-embed without re-fetching** (`re_embed_existing` in `seeding.py`).
 
 ---
 
@@ -229,34 +291,39 @@ better for text.
 ## The seeding pipeline: preparing the database
 
 Before semantic search can work, you need patterns in the database *with* embeddings.
-This is called **seeding**. It's done by a manual script: `backend/scripts/seed_patterns.py`.
+This is called **seeding**. Shared code lives in `backend/app/services/seeding.py`,
+invoked by the CLI (`backend/scripts/seed_patterns.py`) and a **24h incremental
+scheduler**.
 
 ### The seeding flow
 
 ```
-seed_patterns.py --limit 500
+run_seed(limit=..., incremental=False|True)
       │
-      ├─→ Run 15 broad queries against Ravelry API
-      │     ("sweater", "hat", "shawl", "amigurumi", "socks", ...)
-      │     → collect up to 500 unique pattern IDs
+      ├─→ Write seed_runs row (status=running)
       │
-      ├─→ For each pattern ID:
-      │     1. Call Ravelry's pattern detail endpoint → get full data
-      │     2. build_pattern_text() → concatenate name + description + tags
-      │     3. embed_text() → run through the AI model → 384 numbers
-      │     4. UPSERT into PostgreSQL
-      │          (if pattern already exists, update it; don't duplicate)
+      ├─→ Optional: re_embed_existing() from raw_data (no Ravelry calls)
       │
-      └─→ Done. 500+ patterns now have embeddings in the DB.
+      ├─→ collect_pattern_ids()
+      │     Full: ~25 categories × popularity sorts × knitting/crochet
+      │     Incremental: sort=date per category; stop when a page is all-known
+      │
+      ├─→ For each new pattern ID:
+      │     1. GET /patterns/{id}.json from Ravelry
+      │     2. extract_fields() → columns + tags + raw_data
+      │     3. build_pattern_text() → embed_text() → 384 numbers
+      │     4. UPSERT on ravelry_id
+      │
+      └─→ Mark seed_runs completed/failed; clear_search_caches()
 ```
 
-**Idempotency:** the script skips patterns that already have embeddings
-(`WHERE embedding IS NOT NULL`). Run it twice — it picks up from where it left off
-without creating duplicates. This is a professional property: operations you can safely
-repeat without side effects.
+**Idempotency:** upserts key on `ravelry_id`, so re-running never duplicates rows.
+Already-embedded IDs are skipped when collecting new ones.
 
-**Rate limiting:** there's a 0.3-second sleep between Ravelry API calls to avoid triggering
-Ravelry's rate limiter. Thoughtful, not just grabbing everything as fast as possible.
+**Rate limiting:** `0.5s` sleep between Ravelry calls, with retries/backoff on HTTP 429.
+
+Treat seeding as the **index build** for search — quality is bounded by what you embed
+and when you invalidate Redis. Deeper indexing detail: `10-hybrid-search-and-reranking.md`.
 
 ---
 
@@ -326,20 +393,39 @@ means all similarity scores are in a clean 0-to-1 range that's easy to reason ab
 
 Woolly uses **two different kinds** of AI models. Interviewers will ask about this.
 
-**Bi-encoder** (embedding model — `all-MiniLM-L6-v2`):
-- Embeds query and document *separately* into vectors
-- Compares vectors with cosine similarity
-- Fast — can run over the entire corpus
-- Used in stage 1 (hybrid retrieval)
+### Bi-encoder (stage 1) — `all-MiniLM-L6-v2`
 
-**Cross-encoder** (reranker — `ms-marco-MiniLM-L-6-v2`):
-- Takes query and document *together* as one input
-- Outputs a single relevance score
-- Slow — only feasible on ~60 candidates
-- Used in stage 2 (reranking)
+```
+query  ──encode──►  q_vec
+doc    ──encode──►  d_vec     (docs encoded once at seed time!)
+compare q_vec ↔ d_vec with cosine similarity
+```
 
-**Analogy:** the bi-encoder is speed-dating (quick first impressions at scale). The
-cross-encoder is a deep conversation (accurate but you can only do it with a few people).
+- Query and document are embedded **separately**.
+- Pattern embeddings are **precomputed** and stored in Postgres.
+- At search time you only embed the query (~20ms), then do nearest-neighbor lookup.
+- Fast enough for the whole corpus.
+
+### Cross-encoder (stage 2) — `cross-encoder/ms-marco-MiniLM-L-6-v2`
+
+```
+[query + document text] ──together──► single relevance score
+```
+
+- Sees query and document **in the same forward pass**.
+- Captures interactions separate embeddings miss (e.g. brand-style names).
+- Too slow for thousands of patterns → only runs on ~60 candidates.
+- Trained on MS MARCO (Bing-style query↔passage relevance); transfers well enough to
+  pattern blurbs.
+
+### Metaphor that sticks
+
+| Model | Metaphor |
+|---|---|
+| Bi-encoder | **Speed dating** — glance at GPS profiles of everyone in the city, shortlist 60. |
+| Cross-encoder | **Coffee chat** — sit with those 60 and decide who actually fits. |
+
+Production search almost always looks like: cheap recall → expensive precision.
 
 See `reranking_service.py` and `10-hybrid-search-and-reranking.md` for the full pipeline.
 
@@ -379,6 +465,11 @@ retrieval and the cross-encoder for reranking the top 60 candidates."
 A: "A vector is a list of numbers that represents the meaning of a piece of text.
 The model was trained so that similar texts produce similar vectors — they end up close
 together in 384-dimensional space. It's like GPS coordinates for meaning."
+
+**Q: Training vs inference — which does Woolly do?**
+A: "Training adjusts model weights on huge datasets — I don't do that. Inference runs
+the frozen pretrained model to turn text into vectors or relevance scores. Both of my
+models are HuggingFace downloads used inference-only."
 
 **Q: What is cosine similarity?**
 A: "It measures the angle between two vectors. A small angle means the texts point in the
