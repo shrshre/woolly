@@ -286,6 +286,16 @@ def run_seed(
                 if processed % LOG_EVERY == 0:
                     logger.info("Processed %d/%d...", processed, len(ids))
 
+        # Visual search: embed photos of any patterns still missing image
+        # embeddings (newly seeded ones, plus earlier failures). Best-effort —
+        # a failure here must not fail the seed run.
+        try:
+            from app.services.clip_service import embed_missing_images
+
+            embed_missing_images(session, limit=limit or None)
+        except Exception:
+            logger.exception("Image embedding backfill failed; will retry next run.")
+
         run.status = "completed"
     except Exception:
         logger.exception("Seed run %d failed.", run.id)

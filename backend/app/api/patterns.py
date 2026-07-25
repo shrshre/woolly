@@ -10,8 +10,9 @@ import time
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from pydantic import BaseModel
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_user_optional
@@ -20,6 +21,7 @@ from app.config import Settings, get_settings
 from app.db.models import Pattern, ResultInteraction, SavedPattern, SearchEvent, User
 from app.db.session import get_db, get_sessionmaker
 from app.search.pipeline import search as run_search_pipeline
+from app.services import clip_service, reranking_service
 from app.services.ravelry_client import (
     PatternProvider,
     PatternSearchResult,
@@ -213,6 +215,102 @@ async def semantic_search_patterns(
         query=query,
         patterns=[SemanticPatternSummary(**row) for row in page],
         total=len(results),
+        search_event_id=search_event_id,
+    )
+
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+VISUAL_SEARCH_QUERY_LABEL = "[image search]"  # search_events.query is NOT NULL
+
+
+@router.post("/visual-search", response_model=SemanticSearchResult)
+async def visual_search_patterns(
+    file: UploadFile,
+    limit: int = Query(10, ge=5, le=30, description="Results to return (min 5)"),
+    session_id: str | None = Query(None, description="Anonymous browser session id, for analytics"),
+    user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+) -> SemanticSearchResult:
+    """Find patterns whose photos look like the uploaded image.
+
+    CLIP image-to-image similarity over the pattern photo corpus. Always
+    returns the top-N nearest neighbors (no score threshold), so a valid
+    image never yields an empty result set.
+    """
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=415, detail="Upload a JPEG, PNG, or WebP image.")
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 10MB).")
+
+    started = time.perf_counter()
+    try:
+        query_vector = clip_service.embed_image_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    vector_literal = "[" + ",".join(str(v) for v in query_vector) + "]"
+    rows = db.execute(
+        text(
+            """
+            SELECT ravelry_id, name, designer, description, difficulty,
+                   ravelry_url, image_url, is_free, id AS internal_id,
+                   1 - (image_embedding <=> CAST(:vec AS vector)) AS similarity
+            FROM patterns
+            WHERE image_embedding IS NOT NULL
+            ORDER BY image_embedding <=> CAST(:vec AS vector)
+            LIMIT :limit
+            """
+        ),
+        {"vec": vector_literal, "limit": limit},
+    ).mappings().all()
+
+    if not rows:
+        raise HTTPException(
+            status_code=503,
+            detail="No image-embedded patterns yet. Run scripts/embed_images.py first.",
+        )
+
+    latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+    patterns = []
+    for row in rows:
+        similarity = round(float(row["similarity"]), 4)
+        patterns.append(
+            SemanticPatternSummary(
+                id=row["ravelry_id"],
+                name=row["name"],
+                designer=row["designer"],
+                permalink=None,
+                ravelry_url=row["ravelry_url"],
+                photo_url=row["image_url"],
+                free=row["is_free"],
+                description=row["description"],
+                difficulty=row["difficulty"],
+                similarity_score=similarity,
+                # Surfaced as rerank_score so the UI relevance bar renders;
+                # for visual search this is raw CLIP cosine similarity.
+                rerank_score=similarity,
+                relevance_label=reranking_service.relevance_label(similarity),
+            )
+        )
+
+    search_event_id = _log_search_event(
+        session_id=session_id or str(uuid.uuid4()),
+        user_id=user.id if user else None,
+        query=VISUAL_SEARCH_QUERY_LABEL,
+        filters={},
+        result_count=len(patterns),
+        top_result_id=rows[0]["internal_id"],
+        latency_ms=latency_ms,
+        cache_hit=False,
+        search_type="visual",
+    )
+
+    return SemanticSearchResult(
+        query=VISUAL_SEARCH_QUERY_LABEL,
+        patterns=patterns,
+        total=len(patterns),
         search_event_id=search_event_id,
     )
 

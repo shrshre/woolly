@@ -77,6 +77,14 @@ export function searchPatterns(
   return request(`/patterns/semantic-search?${params.toString()}`);
 }
 
+/** Find patterns whose photos look like the uploaded image (CLIP similarity). */
+export function visualSearchPatterns(file: File, limit = 10): Promise<PatternSearchResult> {
+  const params = new URLSearchParams({ limit: String(limit), session_id: getSessionId() });
+  const body = new FormData();
+  body.append("file", file);
+  return request(`/patterns/visual-search?${params.toString()}`, { method: "POST", body });
+}
+
 export type InteractionAction = "save" | "ravelry_click";
 
 /** Log a save/click on a search result. Fire-and-forget; uses keepalive so the

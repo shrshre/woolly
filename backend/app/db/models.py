@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 EMBEDDING_DIM = 384
+IMAGE_EMBEDDING_DIM = 512  # clip-ViT-B-32
 
 
 class Base(DeclarativeBase):
@@ -96,6 +97,7 @@ class Pattern(Base):
     ravelry_url: Mapped[str] = mapped_column(Text, nullable=False)
     image_url: Mapped[str | None] = mapped_column(Text)  # linked from Ravelry, never hosted
     embedding = mapped_column(Vector(EMBEDDING_DIM), nullable=True)
+    image_embedding = mapped_column(Vector(IMAGE_EMBEDDING_DIM), nullable=True)  # CLIP, for visual search
     search_vector = mapped_column(TSVECTOR, nullable=True)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     raw_data: Mapped[dict | None] = mapped_column(JSONB)

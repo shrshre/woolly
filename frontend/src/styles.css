@@ -292,6 +292,28 @@ body {
   transition: opacity 0.1s ease;
 }
 
+/* ---------- Visual (photo) search ---------- */
+
+.chip-photo i {
+  font-size: 13px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+.results-label-visual {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.upload-preview {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #e8e0d5;
+}
+
 .pagination {
   display: flex;
   align-items: center;

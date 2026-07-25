@@ -11,6 +11,9 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Warm up the cross-encoder reranking model (~90MB download) the same way
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 
+# Warm up the CLIP model used for visual (image) search (~600MB download)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('clip-ViT-B-32')"
+
 COPY app ./app
 COPY scripts ./scripts
 

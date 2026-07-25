@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   ApiError,
   searchPatterns,
+  visualSearchPatterns,
   type PatternSummary,
   type SearchFilters,
 } from "../api/client";
@@ -31,7 +32,11 @@ export function Home() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [paging, setPaging] = useState(false);
+  // "visual" after a photo upload: results are CLIP image matches, no pagination.
+  const [mode, setMode] = useState<"text" | "visual">("text");
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const resultsRef = useRef<HTMLElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -41,6 +46,8 @@ export function Home() {
 
     setLoading(true);
     setError(null);
+    setMode("text");
+    setUploadPreview(null);
     try {
       const res = await searchPatterns(trimmed, activeFilters, { offset: 0, limit: PAGE_SIZE });
       setPatterns(res.patterns);
@@ -77,6 +84,40 @@ export function Home() {
     } finally {
       setPaging(false);
     }
+  }
+
+  async function runVisualSearch(file: File) {
+    if (loading) return;
+    setLoading(true);
+    setError(null);
+    setMode("visual");
+    setUploadPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return URL.createObjectURL(file);
+    });
+    try {
+      const res = await visualSearchPatterns(file, 10);
+      setPatterns(res.patterns);
+      setTotal(res.total ?? res.patterns.length);
+      setSearchEventId(res.search_event_id ?? null);
+      setActiveQuery(res.query); // "[image search]" — display uses mode, not this
+      setPage(1);
+    } catch (err) {
+      setPatterns([]);
+      setTotal(0);
+      setSearchEventId(null);
+      setActiveQuery(null);
+      setError(err instanceof ApiError ? err.message : "Could not reach the backend.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset so picking the same file again re-triggers change.
+    e.target.value = "";
+    if (file) void runVisualSearch(file);
   }
 
   function handleSuggestion(term: string) {
@@ -154,6 +195,21 @@ export function Home() {
               {s}
             </button>
           ))}
+          <button
+            type="button"
+            className="chip chip-photo"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading}
+          >
+            <i className="ti ti-camera" aria-hidden="true"></i> Search by photo
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            onChange={handleFileChange}
+            hidden
+          />
         </div>
         <FilterBar filters={filters} onChange={handleFilters} />
       </header>
@@ -205,9 +261,18 @@ export function Home() {
 
         {!loading && !error && activeQuery && total > 0 && (
           <>
-            <p className="results-label">
-              {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
-            </p>
+            {mode === "visual" ? (
+              <div className="results-label results-label-visual">
+                {uploadPreview && <img src={uploadPreview} alt="Your uploaded photo" className="upload-preview" />}
+                <span>
+                  {total} {total === 1 ? "pattern" : "patterns"} similar to your photo
+                </span>
+              </div>
+            ) : (
+              <p className="results-label">
+                {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
+              </p>
+            )}
             <ul className={paging ? "results-list is-paging" : "results-list"}>
               {patterns.map((p, i) => (
                 <li key={p.id}>
@@ -219,7 +284,7 @@ export function Home() {
                 </li>
               ))}
             </ul>
-            {totalPages > 1 && (
+            {mode === "text" && totalPages > 1 && (
               <nav className="pagination" aria-label="Search result pages">
                 <button
                   type="button"

@@ -85,6 +85,10 @@ def init_db() -> None:
                 "ADD COLUMN IF NOT EXISTS row_count INTEGER NOT NULL DEFAULT 0"
             )
         )
+        # CLIP image embeddings for visual search (backfilled by scripts/embed_images.py)
+        conn.execute(
+            text("ALTER TABLE patterns ADD COLUMN IF NOT EXISTS image_embedding vector(512)")
+        )
         conn.commit()
 
     logger.info("Database initialized: pgvector enabled, tables and index created.")
