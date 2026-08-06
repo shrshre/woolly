@@ -1,9 +1,14 @@
 # 10 — Hybrid Search & Reranking
 
-**The headline feature: how Woolly finds the right patterns through a two-stage pipeline.**
+**The headline feature: how Woolly finds the right patterns through a two-stage text pipeline.**
 
-This is the most important file for interview prep. If you can explain this pipeline fluently,
-you demonstrate real search-engineering depth — not just "I called an embedding API."
+This is the most important file for interview prep on *text* search. If you can explain this
+pipeline fluently, you demonstrate real search-engineering depth — not just "I called an
+embedding API."
+
+**Separate path:** photo upload / CLIP visual search is documented in
+`12-visual-search-clip.md`. Do not describe visual search as "hybrid + rerank" — it is a
+different modality (image→image, no BM25, no cross-encoder).
 
 Read `03-semantic-search-embeddings.md` and `04-pgvector-vector-databases.md` first if you
 haven't already. This file builds on both.
@@ -187,8 +192,9 @@ do it for a small group.
 3. Runs `CrossEncoder.predict(pairs)` — outputs raw logits
 4. Applies sigmoid to map logits to 0–1 (`rerank_score`)
 5. Assigns labels: "Strong match" (>0.7), "Good match" (>0.4), "Possible match"
-6. Filters out scores below 0.1, but keeps at least 3 results (never returns empty purely
-   due to threshold)
+6. Filters out scores below 0.1, but **backfills** up to `MIN_RESULT_COUNT` (10) with the
+   next-best below-threshold candidates so a sparse set never starves a full results page.
+   Below-threshold rows keep their real scores and "Possible match" labels.
 
 ### Graceful degradation
 
@@ -296,8 +302,10 @@ Without seeded embeddings and indexes, live search has nothing to retrieve.
 1. Audit row in `seed_runs`
 2. Optional `re_embed_existing()` from `raw_data` after changing `build_pattern_text`
 3. Collect IDs (full category×sort matrix, or incremental `sort=date`)
-4. Detail fetch → embed → upsert on `ravelry_id`
-5. `clear_search_caches()` so new patterns aren't hidden behind stale Redis envelopes
+4. Detail fetch → strip NUL chars → text-embed → upsert on `ravelry_id`
+   (per-pattern try/except so one bad payload doesn't abort the run)
+5. CLIP image backfill for patterns missing `image_embedding` (visual search index)
+6. `clear_search_caches()` so new patterns aren't hidden behind stale Redis envelopes
 
 Scheduler: every 24h, incremental seed (limit 500). Rate limit: 0.5s between Ravelry calls.
 
@@ -306,7 +314,12 @@ Scheduler: every 24h, incremental seed (limit 500). Rate limit: 0.5s between Rav
 ## Analytics tied to ranking
 
 Every search (cache hit or miss) writes `search_events`: query, filters, result_count,
-`top_result_id`, latency_ms, cache_hit, `search_type` (`hybrid` | `semantic`).
+`top_result_id`, latency_ms, cache_hit, `search_type` (`hybrid` | `semantic` | `visual`).
+
+**Implementation detail (junior-friendly):** the insert uses the **request's own DB
+session**, not a brand-new connection. Opening a second connection while the request
+still holds a transaction can deadlock against DDL (e.g. `init_db` ALTER TABLE during a
+seed). Analytics failures are still logged and swallowed so search never 500s.
 
 Frontend keeps a `session_id` (localStorage). Saves / Ravelry clicks POST
 `result_interactions` with **absolute 1-indexed position** (`offset + index + 1`) so you
@@ -322,11 +335,13 @@ quality, not only built a demo.
 | Failure | Response |
 |---|---|
 | Reranker exception | Hybrid top-50 still returned |
+| Few scores above 0.1 | Backfill to 10 results with best below-threshold rows |
 | Redis down | Fail open; every request is a miss |
 | Empty corpus / no embeddings | 503 with seed hint |
 | Niche NL query | Semantic fallback (`search_type=semantic`) |
 | Seed finished | Cache cleared — freshness over hit rate |
 | Analytics INSERT fails | Logged; search still 200 |
+| One bad Ravelry pattern during seed | Rolled back + skipped; run continues |
 
 ---
 

@@ -306,6 +306,10 @@ body {
   gap: 10px;
 }
 
+.results-filter-hint {
+  font-style: italic;
+}
+
 .upload-preview {
   width: 44px;
   height: 44px;

@@ -92,6 +92,7 @@ class SemanticSearchResult(PatternSearchResult):
 
 
 def _log_search_event(
+    db: Session,
     *,
     session_id: str,
     user_id: int | None,
@@ -106,28 +107,29 @@ def _log_search_event(
     """Write one search_events row synchronously and return its id.
 
     Synchronous (not BackgroundTasks) on purpose: the search response needs the
-    real FK id so result_interactions can reference it, and a background task
-    couldn't return the DB-generated id. It's a single fast INSERT on a fresh
-    session (never the request session, which is torn down after the response),
-    and any failure is logged and swallowed so analytics never 500s the search.
+    real FK id so result_interactions can reference it. Uses the REQUEST's own
+    session — a second connection here can queue behind DDL that is itself
+    waiting on this request's open transaction, wedging the request forever
+    (observed live with init_db's ALTER TABLE during a seed run). Any failure
+    is logged and swallowed so analytics never 500s the search.
     """
     try:
-        with get_sessionmaker()() as session:
-            event = SearchEvent(
-                session_id=session_id,
-                user_id=user_id,
-                query=query,
-                filters=filters,
-                result_count=result_count,
-                top_result_id=top_result_id,
-                latency_ms=latency_ms,
-                cache_hit=cache_hit,
-                search_type=search_type,
-            )
-            session.add(event)
-            session.commit()
-            return event.id
+        event = SearchEvent(
+            session_id=session_id,
+            user_id=user_id,
+            query=query,
+            filters=filters,
+            result_count=result_count,
+            top_result_id=top_result_id,
+            latency_ms=latency_ms,
+            cache_hit=cache_hit,
+            search_type=search_type,
+        )
+        db.add(event)
+        db.commit()
+        return event.id
     except Exception:
+        db.rollback()
         logger.exception("Failed to log search event for %r; continuing.", query)
         return None
 
@@ -200,6 +202,7 @@ async def semantic_search_patterns(
         if v is not None
     }
     search_event_id = _log_search_event(
+        db,
         session_id=session_id,
         user_id=user.id if user else None,
         query=query,
@@ -296,6 +299,7 @@ async def visual_search_patterns(
         )
 
     search_event_id = _log_search_event(
+        db,
         session_id=session_id or str(uuid.uuid4()),
         user_id=user.id if user else None,
         query=VISUAL_SEARCH_QUERY_LABEL,

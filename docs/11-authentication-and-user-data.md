@@ -10,13 +10,16 @@ developer.
 
 ## Why auth exists in Woolly
 
-Search works without logging in. Auth unlocks **personal data**:
+Search works without logging in — both **text** hybrid search and **visual** (photo)
+search. Auth unlocks **personal data**:
 
-- **Saved patterns** — bookmark patterns to your library
+- **Saved patterns** — bookmark patterns to your library (works from either search mode)
 - **Projects** — track works-in-progress (yarn, needles, progress, notes)
 - **Stitch counter** — persist stitch/row counts per project
 
 These features need to know *which user* owns the data. That's what auth provides.
+Visual search may still attach an optional logged-in `user_id` to `search_events` for
+analytics when a cookie is present (`get_current_user_optional`).
 
 ---
 

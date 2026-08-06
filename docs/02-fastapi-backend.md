@@ -204,10 +204,14 @@ runs the cleanup code in `get_db` (closing the session).
 ## Startup lifecycle — loading things before the first request
 
 Some things should happen *once* when the server starts, not on every request:
-- Enable pgvector, create tables, set up full-text and trigram indexes
+- Enable pgvector, create tables, set up full-text and trigram indexes, image column
 - Load the bi-encoder embedding model (takes 3-5 seconds)
 - Load the cross-encoder reranking model (takes 3-5 seconds)
 - Start the background scheduler (24h incremental re-seed)
+
+**Not** loaded at startup: the CLIP model for visual search (~600MB RAM). It loads on
+the first `POST /patterns/visual-search` via a lazy singleton. Text search is the hot
+path; photo search is colder — don't tax every container with that memory bill.
 
 FastAPI provides a **lifespan** hook for this:
 
@@ -215,7 +219,7 @@ FastAPI provides a **lifespan** hook for this:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        init_db()           # pgvector, tables, FTS, trigram indexes
+        init_db()           # pgvector, tables, FTS, trigram, image_embedding column
     except Exception as exc:
         logger.warning("Database init failed; semantic search will be unavailable.")
     get_model()             # bi-encoder — once, shared forever
@@ -225,9 +229,10 @@ async def lifespan(_: FastAPI):
     stop_scheduler()        # cleanup on shutdown
 ```
 
-**Why pre-load both models?** Each takes 3-5 seconds to load. Loading per request would
-make every search painfully slow. Both use the singleton pattern — see
-`embedding_service.py` and `reranking_service.py`.
+**Why pre-load the text models?** Each takes 3-5 seconds to load. Loading per request would
+make every text search painfully slow. They use the singleton pattern — see
+`embedding_service.py` and `reranking_service.py`. CLIP uses the same pattern in
+`clip_service.py`, just triggered later.
 
 ---
 
@@ -255,10 +260,12 @@ The status codes Woolly uses:
 |---|---|---|
 | 200 | OK | Successful response |
 | 400 | Bad Request | Empty query string |
-| 422 | Validation Error | Pydantic catches bad input (automatic) |
+| 413 | Payload Too Large | Visual search image over 10MB |
+| 415 | Unsupported Media Type | Visual search file isn't JPEG/PNG/WebP |
+| 422 | Validation Error | Pydantic / undecodable image |
 | 429 | Too Many Requests | Ravelry rate-limited us |
 | 502 | Bad Gateway | Ravelry rejected our credentials |
-| 503 | Service Unavailable | DB is down, not seeded, or Ravelry is unreachable |
+| 503 | Service Unavailable | DB down, not seeded, no image embeddings yet, or Ravelry unreachable |
 
 **Analogy:** a good restaurant doesn't disappear into the kitchen when an order is wrong —
 they come back out and say "I'm sorry, we're out of that tonight, can I suggest something
@@ -306,14 +313,27 @@ incoming HTTP request: GET /patterns/semantic-search?q=cozy+sweater&craft=knitti
          ├─→ redis_client.set_cached()       [save full list]
          │
          └─→ slice page[offset:offset+limit] → SemanticSearchResult → JSON
+
+Visual path (separate route, same response shape):
+
+POST /patterns/visual-search  (multipart file)
+         │
+         ▼
+   api/patterns.py — visual_search_patterns()
+         │
+         ├─→ clip_service.embed_image_bytes()   [lazy-load CLIP if needed]
+         ├─→ SQL nearest neighbor on image_embedding (512-d)
+         └─→ SemanticSearchResult (similarity exposed as rerank_score)
 ```
 
 Woolly also has separate routers for auth (`auth/routes.py`), projects (`api/projects.py`),
 and users/library (`api/users.py`). Protected routes inject `get_current_user` via
-`Depends()` — see `11-authentication-and-user-data.md`.
+`Depends()` — see `11-authentication-and-user-data.md`. Visual search deep dive:
+`12-visual-search-clip.md`.
 
-Each module has one job. The route handler orchestrates; the pipeline delegates to
-hybrid search and reranking. This is **separation of concerns**.
+Each module has one job. The route handler orchestrates; the text pipeline delegates to
+hybrid search and reranking; visual search is its own short path. This is **separation of
+concerns**.
 
 ---
 
@@ -344,8 +364,9 @@ app settings, and the Ravelry client into route handlers. This makes routes easi
 (you can swap real dependencies for fakes) and eliminates boilerplate."
 
 **Q: What happens when the server starts up?**
-A: "The lifespan hook runs: database init (pgvector, tables, full-text and trigram indexes),
-then pre-loads both AI models — the bi-encoder for embeddings and the cross-encoder for
-reranking — then starts a background scheduler that re-seeds patterns every 24 hours.
-If database init fails, the server still starts with a warning. On shutdown, the scheduler
-stops cleanly."
+A: "The lifespan hook runs: database init (pgvector, tables, full-text and trigram indexes,
+image_embedding column), then pre-loads the text AI models — the bi-encoder for embeddings
+and the cross-encoder for reranking — then starts a background scheduler that re-seeds
+patterns every 24 hours. CLIP for visual search is *not* loaded here; it loads lazily on
+first photo search to save ~600MB RAM. If database init fails, the server still starts with
+a warning. On shutdown, the scheduler stops cleanly."

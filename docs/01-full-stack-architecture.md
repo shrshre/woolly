@@ -49,9 +49,11 @@ and work together:
 ┌─────────────────────────────────────────────────────────────┐
 │               FastAPI backend (Python/Uvicorn)              │
 │                    localhost:8000                            │
-│  - Receives search queries (+ filters, pagination)          │
-│  - Checks Redis cache                                       │
-│  - Two-stage search: hybrid retrieval → reranking         │
+│  - Receives text queries (+ filters, pagination)            │
+│  - Receives photo uploads for visual search               │
+│  - Checks Redis cache (text search)                       │
+│  - Text: hybrid retrieval → cross-encoder reranking     │
+│  - Visual: CLIP image embedding → nearest photos          │
 │  - Auth (JWT cookies), saved patterns, projects           │
 │  - Returns results as JSON                                  │
 └─────────────┬──────────────────────────┬────────────────────┘
@@ -61,7 +63,8 @@ and work together:
 │  Redis (cache)      │   │  PostgreSQL + pgvector (database) │
 │  localhost:6379     │   │  localhost:5432                   │
 │  - Saves full ranked  │   │  - Stores 500+ patterns           │
-│    lists for 30 min   │   │  - Stores 384-dim embeddings      │
+│    text lists 30 min  │   │  - 384-dim text embeddings        │
+│                       │   │  - 512-dim CLIP image embeddings  │
 │                       │   │  - Full-text search (BM25)        │
 │                       │   │  - Designer trigram matching      │
 │                       │   │  - Users, saved patterns, projects│
@@ -123,6 +126,7 @@ Every response has:
 | `GET /health` | "Are you alive?" | `{"status": "ok"}` |
 | `GET /patterns/search?q=hat` | "Keyword search for hat via Ravelry" | List of pattern objects |
 | `GET /patterns/semantic-search?q=cozy+sweater&craft=knitting&offset=0&limit=10` | "Hybrid search + rerank, with filters and pagination" | Ranked pattern list with `rerank_score`, `total` |
+| `POST /patterns/visual-search` (multipart image file) | "Find patterns whose photos look like this" | Ranked pattern list (CLIP similarity as `rerank_score`) |
 | `GET /patterns/filters` | "What craft/category options exist?" | `{crafts: [...], categories: [...]}` |
 | `POST /auth/register` | "Create an account" | User object + httpOnly JWT cookie |
 | `POST /auth/login` | "Log in" | User object + cookie |
@@ -201,6 +205,25 @@ Page 2 is a cache hit — no recompute.
 That's the whole journey. For the deep dive, read `10-hybrid-search-and-reranking.md`.
 Practice saying this out loud until it's fluent.
 
+### Visual search lifecycle (photo upload)
+
+**Step 1:** User clicks the photo button and picks an image.
+
+**Step 2:** React POSTs the file as multipart form data to
+`/patterns/visual-search` (see `visualSearchPatterns` in `client.ts`).
+
+**Step 3:** FastAPI validates type/size, then CLIP embeds the image (lazy-loads the
+~600MB model on first use). Embedding uses a **multi-crop blend**: full frame + center
+crop, so matching prefers the garment, not the background.
+
+**Step 4:** Postgres finds nearest neighbors on `image_embedding` (512-dim) via cosine
+distance. No hybrid legs, no cross-encoder, no Redis cache — one modality, one stage.
+
+**Step 5:** JSON comes back shaped like text results (`rerank_score` = CLIP similarity)
+so the same `PatternCard` UI works. Analytics logs `search_type="visual"`.
+
+Deep dive: `12-visual-search-clip.md`.
+
 ---
 
 ## CORS — what it is and why Woolly needs it
@@ -277,11 +300,11 @@ woolly/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py           # entrypoint, lifespan (2 AI models + scheduler)
+│       ├── main.py           # entrypoint, lifespan (text AI models + scheduler)
 │       ├── config.py         # env vars → Settings
 │       ├── scheduler.py      # 24h incremental re-seed
 │       ├── api/
-│       │   ├── patterns.py   # search, save, filters
+│       │   ├── patterns.py   # text search, visual search, save, filters
 │       │   ├── projects.py   # project CRUD
 │       │   └── users.py      # library endpoint
 │       ├── auth/
@@ -290,32 +313,33 @@ woolly/
 │       │   └── dependencies.py # get_current_user
 │       ├── services/
 │       │   ├── ravelry_client.py
-│       │   ├── embedding_service.py  # bi-encoder (stage 1)
-│       │   ├── reranking_service.py  # cross-encoder (stage 2)
-│       │   └── seeding.py            # fetch, embed, upsert, clear cache
+│       │   ├── embedding_service.py  # bi-encoder (text stage 1)
+│       │   ├── reranking_service.py  # cross-encoder (text stage 2)
+│       │   ├── clip_service.py       # CLIP visual search (lazy load)
+│       │   └── seeding.py            # fetch, embed, upsert, image backfill, clear cache
 │       ├── search/
-│       │   ├── pipeline.py         # orchestrates hybrid → rerank
+│       │   ├── pipeline.py         # orchestrates hybrid → rerank (text only)
 │       │   ├── hybrid_search.py    # vector + BM25 + designer fusion
 │       │   ├── semantic_search.py  # pure vector (fallback)
 │       │   └── filters.py          # SQL filter helpers
 │       ├── cache/
 │       │   └── redis_client.py
 │       └── db/
-│           ├── models.py     # Pattern, User, Project, SavedPattern, SeedRun
+│           ├── models.py     # Pattern (+ image_embedding), User, Project, …
 │           ├── session.py
-│           └── init_db.py    # pgvector, full-text, trigram indexes
+│           └── init_db.py    # pgvector, full-text, trigram, image column
 │
 └── frontend/                 # React / TypeScript / Vite
     ├── Dockerfile
     ├── package.json
     └── src/
         ├── App.tsx           # React Router, providers, routes
-        ├── api/client.ts     # typed fetch wrapper (auth, search, projects)
+        ├── api/client.ts     # typed fetch wrapper (auth, search, visual, projects)
         ├── auth/
         │   ├── AuthContext.tsx
         │   └── SavedPatternsContext.tsx
         ├── pages/
-        │   ├── Home.tsx      # search + filters + pagination
+        │   ├── Home.tsx      # text search + photo upload + filters + pagination
         │   ├── Library.tsx   # saved patterns (protected)
         │   ├── Projects.tsx  # WIP tracker (protected)
         │   ├── StitchCounter.tsx
@@ -338,13 +362,15 @@ it makes the code much easier to navigate, test, and change.
 ## Interview questions for this topic
 
 **Q: Walk me through your system architecture.**
-A: "Woolly is a monorepo with a React front end and a FastAPI back end. Search uses a
-two-stage pipeline: hybrid retrieval combining pgvector semantic search, PostgreSQL
+A: "Woolly is a monorepo with a React front end and a FastAPI back end. Text search uses
+a two-stage pipeline: hybrid retrieval combining pgvector semantic search, PostgreSQL
 full-text BM25, and designer trigram matching, then cross-encoder reranking on the top
 candidates. The full ranked list is cached in Redis per query and filters; pagination
-slices that cache. Auth uses JWT in httpOnly cookies for saved patterns and project
-tracking. Two local AI models load at startup. A background scheduler re-seeds patterns
-every 24 hours. Everything runs in Docker via docker-compose."
+slices that cache. Separately, visual search lets users upload a photo — CLIP embeds it
+and we find nearest pattern photos in a 512-d pgvector column. Text models load at
+startup; CLIP loads lazily because it's heavy. Auth uses JWT in httpOnly cookies for
+saved patterns and project tracking. A background scheduler re-seeds patterns every 24
+hours. Everything runs in Docker via docker-compose."
 
 **Q: Why a monorepo?**
 A: "For a project at this scale with one developer, a monorepo keeps front end and back end

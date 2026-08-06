@@ -179,10 +179,10 @@ This is the Dependency Inversion Principle from SOLID design principles.
 ### Pattern 2: Singleton
 
 **The problem:** loading `all-MiniLM-L6-v2` takes 3-5 seconds. Calling it once per request
-would make every search 5 seconds slow.
+would make every search 5 seconds slow. CLIP (`clip-ViT-B-32`) is even heavier (~600MB RAM).
 
-**The solution:** load the model **once** and store it in a module-level variable. Every
-subsequent call to `get_model()` returns the same already-loaded instance.
+**The solution:** load each model **once** and store it in a module-level variable. Every
+subsequent call returns the same already-loaded instance.
 
 ```python
 _model = None
@@ -204,6 +204,14 @@ The `threading.Lock()` and double-check are for thread safety: if two requests a
 simultaneously and both check `_model is None` before either has loaded it, only one thread
 acquires the lock and does the loading. The other waits, then checks again and finds it loaded.
 
+**Eager vs lazy singletons in Woolly:**
+
+| Singleton | When created | Why |
+|---|---|---|
+| Bi-encoder + cross-encoder | App startup (lifespan) | Every text search needs them |
+| CLIP | First visual search | Heavy; text-only traffic shouldn't pay the RAM cost |
+| Redis client | First cache call | Cheap; no need to force at startup |
+
 **Redis uses the same pattern:**
 ```python
 _redis: redis.Redis | None = None
@@ -215,7 +223,7 @@ def get_redis() -> redis.Redis:
     return _redis
 ```
 
-One Redis connection, shared by all requests.
+One Redis connection pool, shared by all requests.
 
 **Analogy:** a single whiteboard in a shared office. Everyone who needs to write something
 uses the same whiteboard — you don't buy a new one for each person. The lock is like a
@@ -314,8 +322,10 @@ Each module in Woolly has exactly one job:
 |---|---|
 | `api/patterns.py` | Handle HTTP requests — validation, routing, error translation |
 | `services/ravelry_client.py` | Talk to Ravelry's API |
-| `services/embedding_service.py` | Run the AI model to create embeddings |
-| `search/semantic_search.py` | Query pgvector for nearest neighbors |
+| `services/embedding_service.py` | Run the text embedding model |
+| `services/clip_service.py` | Run CLIP for visual (image) embeddings |
+| `services/reranking_service.py` | Cross-encoder reranking for text search |
+| `search/semantic_search.py` | Query pgvector for nearest text neighbors |
 | `cache/redis_client.py` | Read and write to Redis |
 | `db/models.py` | Define the database schema |
 | `db/session.py` | Manage database connections |
@@ -359,9 +369,10 @@ move to OAuth, I write a new class that implements the same interface and swap i
 
 **Q: What is a singleton and where does Woolly use one?**
 A: "A singleton is a class/object where only one instance exists for the lifetime of the
-application. Woolly uses it for both AI models — the bi-encoder and cross-encoder — each
-taking 3-5 seconds to load, so we load once at startup and share across all requests. The
-Redis client connection is also a singleton — one connection pool shared by all requests."
+application. Woolly uses it for the text AI models — bi-encoder and cross-encoder — loaded
+once at startup and shared across requests. CLIP for visual search is the same pattern but
+lazy: first photo search loads it, then it's reused. The Redis client is also a singleton —
+one connection pool shared by all requests."
 
 **Q: What is the 12-factor app?**
 A: "A methodology for building deployable applications. The relevant factor for Woolly is

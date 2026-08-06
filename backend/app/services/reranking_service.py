@@ -17,10 +17,12 @@ logger = logging.getLogger(__name__)
 
 MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Scores below this are dropped from results (after sigmoid, 0-1 scale).
+# Scores below this are dropped from results (after sigmoid, 0-1 scale)...
 MIN_RERANK_SCORE = 0.1
-# If the threshold would empty the result set, keep this many anyway.
-THRESHOLD_FLOOR_COUNT = 3
+# ...but never below this many results: when the threshold-passing set is
+# short, it is backfilled with the next-highest-scoring candidates so a
+# query with enough retrieved candidates always yields a full page.
+MIN_RESULT_COUNT = 10
 
 _model = None
 _model_lock = threading.Lock()
@@ -65,6 +67,10 @@ def rerank(query: str, candidates: list[dict[str, Any]], top_n: int = 10) -> lis
     rerank_score works with the fixed label/threshold cutoffs and the
     UI's proportional relevance bar. Mutates and returns the candidate
     dicts with rerank_score and relevance_label set.
+
+    Returns at least min(MIN_RESULT_COUNT, len(candidates), top_n) results:
+    the sub-threshold tail is only dropped when enough candidates clear
+    MIN_RERANK_SCORE on their own.
     """
     if not candidates:
         return []
@@ -81,7 +87,10 @@ def rerank(query: str, candidates: list[dict[str, Any]], top_n: int = 10) -> lis
         results.append(pattern)
 
     kept = [r for r in results if r["rerank_score"] >= MIN_RERANK_SCORE]
-    if not kept:
-        # Never return empty purely because of the threshold.
-        kept = results[:THRESHOLD_FLOOR_COUNT]
+    if len(kept) < MIN_RESULT_COUNT:
+        # Backfill with the best below-threshold candidates (they keep their
+        # real scores and "Possible match" labels) so the threshold trims the
+        # tail of a rich result set but never starves a sparse one.
+        below = [r for r in results if r["rerank_score"] < MIN_RERANK_SCORE]
+        kept = kept + below[: MIN_RESULT_COUNT - len(kept)]
     return kept

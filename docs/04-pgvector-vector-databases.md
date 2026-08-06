@@ -84,13 +84,17 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 That's it. After that, you can use `vector` as a column type in any table.
 
-In Woolly's `patterns` table:
+In Woolly's `patterns` table there are **two** vector columns (different models, different
+spaces — never compare across them):
+
 ```sql
-embedding vector(384)
+embedding         vector(384)   -- text MiniLM (hybrid / semantic search)
+image_embedding   vector(512)   -- CLIP photos (visual search); nullable until backfilled
 ```
 
-This stores the 384-float embedding for each pattern. The `(384)` specifies the dimension
-— every vector in this column must have exactly 384 numbers.
+The number in parentheses is the **dimension** — every vector in that column must have
+exactly that many floats. Text search uses `embedding`; photo search uses
+`image_embedding`. See `12-visual-search-clip.md` for the image path.
 
 ---
 
@@ -272,7 +276,8 @@ than plain text JSON and supports indexing.
 A: "pgvector is a PostgreSQL extension that adds a `vector` data type, similarity search
 operators like `<=>` for cosine distance, and specialized indexes for fast nearest-neighbor
 search. It lets me do ML-style vector search inside a regular PostgreSQL database without
-running a separate vector store."
+running a separate vector store. Woolly stores both 384-d text embeddings and 512-d CLIP
+image embeddings as pgvector columns on the same `patterns` table."
 
 **Q: Why not use a dedicated vector database like Pinecone?**
 A: "At Woolly's current scale (500-5,000 patterns), pgvector is more than sufficient and

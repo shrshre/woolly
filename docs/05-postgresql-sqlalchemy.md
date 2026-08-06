@@ -38,8 +38,9 @@ CREATE TABLE IF NOT EXISTS patterns (
     category    TEXT,                  -- first pattern category
     is_free     BOOLEAN DEFAULT FALSE,
     ravelry_url TEXT NOT NULL,         -- link back to Ravelry
-    image_url   TEXT,                  -- Ravelry CDN URL — never hosted by Woolly
-    embedding   vector(384),           -- the AI embedding (pgvector)
+    image_url   TEXT,                  -- Ravelry CDN URL — never hosted permanently by Woolly
+    embedding   vector(384),           -- text AI embedding (pgvector / MiniLM)
+    image_embedding vector(512),       -- CLIP photo embedding (nullable until backfilled)
     search_vector tsvector,              -- full-text search index (BM25 leg)
     tags        TEXT[],                -- array of tag strings
     raw_data    JSONB,                 -- full Ravelry API response
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS patterns (
 | `designer` | "by Jane Smith" — shown in the card |
 | `description` | Used in the embedding; shown in search results |
 | `difficulty` | Ravelry stores 0-10 as a float string; Woolly maps it to Beginner/Intermediate/Advanced in the UI |
-| `embedding` | The 384-float semantic embedding — powers the vector search leg |
+| `embedding` | The 384-float text embedding — powers the semantic / hybrid vector leg |
+| `image_embedding` | The 512-float CLIP embedding — powers visual (photo) search; NULL until backfilled |
 | `search_vector` | PostgreSQL `tsvector` for full-text (BM25) search — auto-updated by trigger |
 | `tags` | Used in embedding text and full-text index |
 | `craft` | "knitting" or "crochet" — active search filter |
@@ -66,9 +68,10 @@ CREATE TABLE IF NOT EXISTS patterns (
 | `raw_data` | Full Ravelry payload — for future field extraction without re-querying Ravelry |
 | `created_at/updated_at` | Audit trail — when was this stored/last changed |
 
-**Key design decision:** `image_url` stores only the URL, not the actual image. Woolly
-never downloads or hosts pattern images — it just links to Ravelry's CDN. This is required
-by Ravelry's API terms of service and also saves significant storage.
+**Key design decision:** `image_url` stores only the URL, not the actual image file.
+Woolly may **transiently** download bytes during CLIP backfill to compute
+`image_embedding`, then discards the file — it does not host a pattern image CDN. The UI
+still displays photos by linking to Ravelry's CDN. Required by API terms and saves storage.
 
 ---
 
@@ -194,7 +197,8 @@ class Pattern(Base):
     is_free     = Column(Boolean, default=False)
     ravelry_url = Column(Text, nullable=False)
     image_url   = Column(Text)
-    embedding   = mapped_column(Vector(384))    # pgvector type
+    embedding   = mapped_column(Vector(384))    # text MiniLM
+    image_embedding = mapped_column(Vector(512))  # CLIP visual search (nullable)
     search_vector = mapped_column(TSVECTOR)     # full-text search
     tags        = mapped_column(ARRAY(Text))
     raw_data    = Column(JSONB)
@@ -355,12 +359,13 @@ database restarted).
 ## Interview questions for this topic
 
 **Q: Walk me through your database schema.**
-A: "The core table is `patterns` — Ravelry metadata plus a 384-dim embedding vector,
-a `search_vector` tsvector for full-text search, and tags as a PostgreSQL array. User tables
-include `users` (email + bcrypt hash), `saved_patterns` (many-to-many bookmarks), and
-`projects` (WIP tracker with yarn, progress, stitch counts). `seed_runs` logs seeding
-executions. Three index types: IVFFlat for vectors, GIN for full-text, GIN trigram for
-designer names."
+A: "The core table is `patterns` — Ravelry metadata plus a 384-dim text embedding, a
+512-dim CLIP `image_embedding` for visual search, a `search_vector` tsvector for full-text
+search, and tags as a PostgreSQL array. User tables include `users` (email + bcrypt hash),
+`saved_patterns` (many-to-many bookmarks), and `projects` (WIP tracker with yarn, progress,
+stitch counts). `seed_runs` logs seeding executions. Index types: IVFFlat for text vectors,
+GIN for full-text, GIN trigram for designer names. Image vectors are scanned directly at
+current scale; an ANN index would come later."
 
 **Q: What is an ORM and why use one?**
 A: "An ORM maps database tables to Python classes so you can work with familiar objects

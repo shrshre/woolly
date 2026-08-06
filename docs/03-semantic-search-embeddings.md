@@ -77,10 +77,14 @@ and "amigurumi" are far away in a different corner.
 When a user searches "cozy winter sweater," you compute its coordinates on this map and
 then answer: "what patterns are closest to this point?" Those are your results.
 
-**Real embeddings aren't 2D.** You can't visualize them — Woolly uses 384 dimensions.
-But the intuition is identical: similar things are close together, dissimilar things are
-far apart. The math (cosine similarity) works the same regardless of how many dimensions
-you have.
+**Real embeddings aren't 2D.** You can't visualize them — Woolly's *text* model uses
+**384** dimensions. (Visual search uses a different model, CLIP, with **512** dimensions —
+same "coordinates for meaning/appearance" idea, different map. See
+`12-visual-search-clip.md`.)
+
+The intuition is identical either way: similar things are close together, dissimilar
+things are far apart. The math (cosine similarity) works the same regardless of how many
+dimensions you have.
 
 ---
 
@@ -191,13 +195,17 @@ than calling an API" — and the quality gap isn't worth the trade-offs for this
 Loading the bi-encoder takes 3-5 seconds. The cross-encoder takes another 3-5 seconds. If
 you loaded either per search request, every search would be painfully slow.
 
-Solution: load both **once at startup** and share across all requests. This is the
-**singleton pattern** — one instance, shared globally. Woolly uses it in two places:
+Solution: load each model **once** and share across all requests. This is the
+**singleton pattern** — one instance, shared globally. Woolly uses it in three places:
 
-| Model | File | Purpose |
-|---|---|---|
-| Bi-encoder (`all-MiniLM-L6-v2`) | `embedding_service.py` | Embed queries and patterns (stage 1) |
-| Cross-encoder (`ms-marco-MiniLM-L-6-v2`) | `reranking_service.py` | Score query-document pairs (stage 2) |
+| Model | File | When loaded | Purpose |
+|---|---|---|---|
+| Bi-encoder (`all-MiniLM-L6-v2`) | `embedding_service.py` | App startup | Embed queries and patterns (text stage 1) |
+| Cross-encoder (`ms-marco-MiniLM-L-6-v2`) | `reranking_service.py` | App startup | Score query-document pairs (text stage 2) |
+| CLIP (`clip-ViT-B-32`) | `clip_service.py` | First visual search (lazy) | Embed photos for image search (512-d) |
+
+CLIP is the same pattern but **lazy**: ~600MB RAM, only needed for photo upload. Deep
+dive: `12-visual-search-clip.md`.
 
 ```python
 _model = None
@@ -311,8 +319,12 @@ run_seed(limit=..., incremental=False|True)
       ├─→ For each new pattern ID:
       │     1. GET /patterns/{id}.json from Ravelry
       │     2. extract_fields() → columns + tags + raw_data
+      │        (strip NUL chars — Postgres rejects \x00 in TEXT/JSONB)
       │     3. build_pattern_text() → embed_text() → 384 numbers
-      │     4. UPSERT on ravelry_id
+      │     4. UPSERT on ravelry_id (per-pattern try/except so one bad row
+      │        doesn't kill the whole run)
+      │
+      ├─→ embed_missing_images() — CLIP backfill for photos without image_embedding
       │
       └─→ Mark seed_runs completed/failed; clear_search_caches()
 ```
@@ -324,6 +336,7 @@ Already-embedded IDs are skipped when collecting new ones.
 
 Treat seeding as the **index build** for search — quality is bounded by what you embed
 and when you invalidate Redis. Deeper indexing detail: `10-hybrid-search-and-reranking.md`.
+Image index detail: `12-visual-search-clip.md`.
 
 ---
 

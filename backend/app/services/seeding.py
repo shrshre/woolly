@@ -47,6 +47,21 @@ def strip_html(text: str | None) -> str:
     return re.sub(r"<[^>]+>", " ", text).strip()
 
 
+def strip_nul(value):
+    """Recursively remove NUL characters from strings in a JSON-like value.
+
+    Ravelry payloads occasionally contain literal \\u0000 escapes, which
+    PostgreSQL cannot store in TEXT or JSONB columns (UntranslatableCharacter).
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {k: strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [strip_nul(v) for v in value]
+    return value
+
+
 def build_seed_queries(incremental: bool = False) -> list[dict[str, Any]]:
     """Build the list of Ravelry search param sets to seed from.
 
@@ -158,21 +173,23 @@ def extract_fields(detail: dict[str, Any]) -> dict[str, Any] | None:
     tags = [attr.get("permalink") for attr in attributes if attr.get("permalink")]
     tags += [cat.get("name") for cat in categories if cat.get("name")]
 
-    return {
-        "ravelry_id": ravelry_id,
-        "name": name,
-        "designer": (pattern.get("pattern_author") or {}).get("name"),
-        "description": strip_html(pattern.get("notes_html") or pattern.get("notes")),
-        # Ravelry reports 0 when a pattern has no difficulty ratings yet
-        "difficulty": str(round(difficulty_avg, 1)) if difficulty_avg else None,
-        "craft": (pattern.get("craft") or {}).get("name"),
-        "category": categories[0].get("name") if categories else None,
-        "is_free": bool(pattern.get("free")),
-        "ravelry_url": f"https://www.ravelry.com/patterns/library/{permalink}",
-        "image_url": first_photo.get("small_url") or first_photo.get("square_url"),
-        "tags": tags,
-        "raw_data": pattern,
-    }
+    return strip_nul(
+        {
+            "ravelry_id": ravelry_id,
+            "name": name,
+            "designer": (pattern.get("pattern_author") or {}).get("name"),
+            "description": strip_html(pattern.get("notes_html") or pattern.get("notes")),
+            # Ravelry reports 0 when a pattern has no difficulty ratings yet
+            "difficulty": str(round(difficulty_avg, 1)) if difficulty_avg else None,
+            "craft": (pattern.get("craft") or {}).get("name"),
+            "category": categories[0].get("name") if categories else None,
+            "is_free": bool(pattern.get("free")),
+            "ravelry_url": f"https://www.ravelry.com/patterns/library/{permalink}",
+            "image_url": first_photo.get("small_url") or first_photo.get("square_url"),
+            "tags": tags,
+            "raw_data": pattern,
+        }
+    )
 
 
 def _pattern_to_dict(pattern: Pattern) -> dict[str, Any]:
@@ -233,9 +250,12 @@ def run_seed(
     run = SeedRun(status="running")
     session.add(run)
     session.commit()
+    # Plain int copy: safe to log even if the session later dies mid-run.
+    run_id = run.id
 
     added = 0
     updated = 0
+    status = "running"
     try:
         if re_embed:
             updated += re_embed_existing(session)
@@ -266,21 +286,30 @@ def run_seed(
                 if fields is None:
                     continue
 
-                fields["embedding"] = embed_text(build_pattern_text(fields))
+                # One malformed pattern must never kill the whole run: roll
+                # back its transaction, log, and move on to the next id.
+                try:
+                    fields["embedding"] = embed_text(build_pattern_text(fields))
 
-                existing = (
-                    session.query(Pattern)
-                    .filter(Pattern.ravelry_id == fields["ravelry_id"])
-                    .one_or_none()
-                )
+                    existing = (
+                        session.query(Pattern)
+                        .filter(Pattern.ravelry_id == fields["ravelry_id"])
+                        .one_or_none()
+                    )
+                    if existing:
+                        for key, value in fields.items():
+                            setattr(existing, key, value)
+                    else:
+                        session.add(Pattern(**fields))
+                    session.commit()
+                except Exception as exc:
+                    session.rollback()
+                    logger.warning("Skipping pattern %s: %s", fields.get("ravelry_id"), exc)
+                    continue
                 if existing:
-                    for key, value in fields.items():
-                        setattr(existing, key, value)
                     updated += 1
                 else:
-                    session.add(Pattern(**fields))
                     added += 1
-                session.commit()
 
                 processed += 1
                 if processed % LOG_EVERY == 0:
@@ -296,21 +325,28 @@ def run_seed(
         except Exception:
             logger.exception("Image embedding backfill failed; will retry next run.")
 
-        run.status = "completed"
+        status = "completed"
     except Exception:
-        logger.exception("Seed run %d failed.", run.id)
-        run.status = "failed"
+        logger.exception("Seed run %d failed.", run_id)
+        status = "failed"
         raise
     finally:
-        run.patterns_added = added
-        run.patterns_updated = updated
-        run.finished_at = datetime.utcnow()
-        session.commit()
+        # The session may be in a failed state; recover it before writing the
+        # final run record so the outcome is always persisted.
+        try:
+            session.rollback()
+            run.status = status
+            run.patterns_added = added
+            run.patterns_updated = updated
+            run.finished_at = datetime.utcnow()
+            session.commit()
+        except Exception:
+            logger.exception("Could not persist final state of seed run %d.", run_id)
         session.close()
         cleared = clear_search_caches()
         logger.info(
             "Seed run %d %s: %d added, %d updated, %d cache entries cleared.",
-            run.id, run.status, added, updated, cleared,
+            run_id, status, added, updated, cleared,
         )
 
-    return {"added": added, "updated": updated, "status": run.status, "seed_run_id": run.id}
+    return {"added": added, "updated": updated, "status": status, "seed_run_id": run_id}

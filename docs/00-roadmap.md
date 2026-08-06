@@ -7,7 +7,7 @@ follow-up questions cold."
 Each file is self-contained. You can study them in any order, but the sequence below is
 designed so each topic builds on the previous one.
 
-**Time estimate:** 12–14 focused study sessions (45–60 min each). Don't try to do it all at
+**Time estimate:** 13–15 focused study sessions (45–60 min each). Don't try to do it all at
 once — two sessions per day is the sweet spot.
 
 ---
@@ -19,16 +19,17 @@ has since grown into a full product architecture:
 
 | Area | Before | Now |
 |---|---|---|
-| Search | Pure semantic (vector only) | **Two-stage pipeline:** hybrid retrieval (vector + BM25 + designer trigram) → cross-encoder reranking |
+| Search | Pure semantic (vector only) | **Two-stage text pipeline:** hybrid retrieval (vector + BM25 + designer trigram) → cross-encoder reranking |
+| Visual search | None | **CLIP image-to-image:** upload a photo → nearest pattern photos (`image_embedding` 512-d) |
 | Filters | None | Craft, difficulty tier, free/paid, category — applied in SQL before ranking |
 | Pagination | Single page of 10 | Up to 50 ranked results, cached as a full list, paginated via `offset`/`limit` |
 | Auth | Placeholder UI | JWT in httpOnly cookies, bcrypt passwords, protected routes |
 | User data | None | Saved patterns (library), project tracker (WIP), stitch counter |
-| Seeding | Manual script only | Manual + **24h incremental scheduler**, `seed_runs` audit table, cache invalidation |
-| Frontend | Single search page | React Router, multiple pages, auth context, filter bar |
+| Seeding | Manual script only | Manual + **24h incremental scheduler**, `seed_runs` audit table, cache invalidation, image backfill |
+| Frontend | Single search page | React Router, multiple pages, auth context, filter bar, photo upload |
 
-**Interview priority:** Sessions 3, 4, and 10 (search stack) are where you'll spend the most
-time. Know that pipeline cold.
+**Interview priority:** Sessions 3, 4, 5, and 12 (search stack + visual search) are where
+you'll spend the most time. Know both pipelines cold.
 
 ---
 
@@ -47,6 +48,7 @@ time. Know that pipeline cold.
 | `09-react-typescript-frontend.md` | React Router, auth, filters, pagination | Strong to know |
 | `10-hybrid-search-and-reranking.md` | **The headline feature** — hybrid + rerank pipeline | **Must-know** |
 | `11-authentication-and-user-data.md` | JWT cookies, library, projects | Strong to know |
+| `12-visual-search-clip.md` | CLIP image-to-pattern search, multi-crop, lazy model load | **Must-know** |
 
 ---
 
@@ -59,12 +61,13 @@ Start here. Before diving into any specific piece, you need a clear mental model
 everything connects.
 
 **Goal by end of session:** You can draw the system on a whiteboard and explain what each
-box does and what travels between them — including auth, the two-stage search pipeline, and
-user features.
+box does and what travels between them — including auth, the two-stage *text* search
+pipeline, CLIP visual search, and user features.
 
-**Sample question you should be able to answer:**
+**Sample questions you should be able to answer:**
 > "Walk me through what happens from the moment a user types a search query to the moment
 > they see results."
+> "What happens when a user uploads a photo instead?"
 
 ---
 
@@ -72,12 +75,14 @@ user features.
 **File:** `02-fastapi-backend.md`
 
 The FastAPI backend is the brain of the operation. Covers routing, Pydantic, dependency
-injection, lifespan hooks (two AI models + scheduler), and the new routers.
+injection, lifespan hooks (text AI models + scheduler; CLIP loads lazily), and routers
+including visual search.
 
 **Sample questions:**
 > "Why did you use FastAPI over Flask or Django?"
 > "What happens when the server starts up?"
 > "How do you protect routes that require a logged-in user?"
+> "Why isn't CLIP loaded at startup?"
 
 ---
 
@@ -97,12 +102,14 @@ search is now *one leg* of hybrid retrieval — but you still need the embedding
 ### Session 4 — pgvector (40 min)
 **File:** `04-pgvector-vector-databases.md`
 
-How Woolly stores and searches 384-dimensional embeddings inside PostgreSQL.
+How Woolly stores and searches embeddings inside PostgreSQL — 384-d text vectors *and*
+512-d CLIP image vectors.
 
 **Sample questions:**
 > "What is pgvector? Why not Pinecone?"
 > "What is an IVFFlat index?"
 > "What does approximate nearest neighbor mean?"
+> "Why two vector columns instead of one?"
 
 ---
 
@@ -124,11 +131,26 @@ runs on a small candidate pool.
 
 ---
 
+### Session 5b — Visual search with CLIP (50 min) ⭐
+**File:** `12-visual-search-clip.md`
+
+**Second headline search feature.** Completely separate from the text hybrid pipeline.
+Photo upload → CLIP embedding → nearest pattern photos. Multi-crop blending and lazy
+model loading are the design points interviewers will probe.
+
+**Sample questions:**
+> "How does image search work?"
+> "What is CLIP?"
+> "Why blend full-frame and center-crop embeddings?"
+> "Why not load CLIP at startup?"
+
+---
+
 ### Session 6 — The database (45 min)
 **File:** `05-postgresql-sqlalchemy.md`
 
-Covers the `patterns` table, new user tables, `search_vector` for BM25, designer trigram
-indexes, and SQLAlchemy sessions.
+Covers the `patterns` table (including `image_embedding`), user tables, `search_vector`
+for BM25, designer trigram indexes, and SQLAlchemy sessions.
 
 **Sample questions:**
 > "Walk me through your database schema."
@@ -223,9 +245,10 @@ well.
    → Sessions 3, 4, 5, and 6 all have scaling sections.
 
 5. **"What would you build next?"**
-   → See your backlog: recommendations engine, image-to-pattern search, Ravelry OAuth,
-   public project pages, observability (metrics/tracing). Hybrid retrieval and reranking
-   are **done** — don't say you'd build those next.
+   → See your backlog: recommendations engine, Ravelry OAuth, public project pages,
+   observability (metrics/tracing). Hybrid retrieval, reranking, and CLIP visual search
+   are **done** — don't say you'd build those next. Good "next" ideas for visual search:
+   CLIP text→image queries, ANN index on `image_embedding`, combining photo + text.
 
 ---
 
@@ -233,15 +256,17 @@ well.
 
 Commit these to memory. Each is a launchpad for a longer explanation.
 
-- **Full-stack app:** "A React front end talks to a FastAPI back end over REST, with PostgreSQL for permanent data, Redis for search caching, and two local AI models — all running in Docker."
-- **Two-stage search:** "Stage 1 is fast hybrid retrieval — vector similarity, PostgreSQL full-text (BM25), and designer trigram matching fused with weighted scores. Stage 2 is a cross-encoder reranker that scores query-document pairs together on the top ~60 candidates for much higher accuracy."
+- **Full-stack app:** "A React front end talks to a FastAPI back end over REST, with PostgreSQL for permanent data, Redis for text-search caching, and local AI models — all running in Docker."
+- **Two-stage text search:** "Stage 1 is fast hybrid retrieval — vector similarity, PostgreSQL full-text (BM25), and designer trigram matching fused with weighted scores. Stage 2 is a cross-encoder reranker that scores query-document pairs together on the top ~60 candidates for much higher accuracy."
+- **Visual search:** "Users upload a photo; CLIP turns it into a 512-d vector; I find nearest pattern photos via pgvector. Multi-crop blending prefers garment texture over background/pose."
 - **Bi-encoder vs cross-encoder:** "The bi-encoder embeds query and document separately (fast, runs over the whole corpus). The cross-encoder scores them together (slow but accurate, only runs on the candidate pool)."
-- **pgvector:** "A PostgreSQL extension that lets you store vectors and search by cosine similarity — nearest-neighbor search inside a regular database."
+- **CLIP:** "A pretrained model that maps images (and text) into a shared embedding space. I use image-to-image retrieval only, inference-only, loaded lazily because it's ~600MB."
+- **pgvector:** "A PostgreSQL extension that lets you store vectors and search by cosine similarity — nearest-neighbor search inside a regular database. Woolly has two vector columns: 384-d text and 512-d image."
 - **BM25 / full-text search:** "PostgreSQL's `tsvector` + GIN index lets me do keyword ranking with `ts_rank` — catches exact terms and designer names that pure semantic search might miss."
 - **Designer trigram matching:** "The `pg_trgm` extension compares space-stripped query text to designer names, so 'Petite Knit' finds PetiteKnit patterns that full-text search tokenization would miss."
-- **Redis cache:** "I cache the full ranked result list (up to 50 patterns) per query+filters for 30 minutes, so pagination is instant and identical queries skip both AI models and the database."
+- **Redis cache:** "I cache the full ranked text-search result list (up to 50 patterns) per query+filters for 30 minutes, so pagination is instant. Visual search is not cached — uploads are unique."
 - **Auth:** "JWT stored in an httpOnly cookie — the browser sends it automatically, JavaScript can't read it (XSS-safe), and protected routes use a FastAPI dependency that decodes the token."
-- **Singleton:** "Both AI models (bi-encoder and cross-encoder) load once at startup and are shared across all requests — loading per-request would add seconds of latency."
+- **Singleton:** "Text models load once at startup; CLIP loads once on first visual search — all shared across requests. Loading per-request would add seconds of latency."
 - **12-factor config:** "All secrets and server addresses come from environment variables — nothing is hardcoded — so the same code runs locally and in the cloud."
 
 ---
@@ -252,19 +277,23 @@ When an interviewer says "show me where that happens," know these files:
 
 | Concern | File |
 |---|---|
-| Search entry point | `backend/app/api/patterns.py` → `semantic_search_patterns()` |
-| Two-stage pipeline | `backend/app/search/pipeline.py` |
+| Text search entry point | `backend/app/api/patterns.py` → `semantic_search_patterns()` |
+| Visual search entry point | `backend/app/api/patterns.py` → `visual_search_patterns()` |
+| Two-stage text pipeline | `backend/app/search/pipeline.py` |
 | Hybrid retrieval | `backend/app/search/hybrid_search.py` |
 | Pure semantic (fallback) | `backend/app/search/semantic_search.py` |
 | Cross-encoder reranking | `backend/app/services/reranking_service.py` |
+| CLIP image embeddings | `backend/app/services/clip_service.py` |
+| Image embedding backfill | `backend/scripts/embed_images.py` |
 | SQL filters | `backend/app/search/filters.py` |
 | Bi-encoder embeddings | `backend/app/services/embedding_service.py` |
 | Redis cache keys | `backend/app/cache/redis_client.py` |
 | DB schema | `backend/app/db/models.py` |
-| DB init (pgvector, full-text, trigram) | `backend/app/db/init_db.py` |
+| DB init (pgvector, full-text, trigram, image col) | `backend/app/db/init_db.py` |
 | Auth routes | `backend/app/auth/routes.py` |
 | JWT + bcrypt | `backend/app/auth/security.py` |
 | Seeding + cache invalidation | `backend/app/services/seeding.py` |
 | 24h scheduler | `backend/app/scheduler.py` |
 | Frontend API client | `frontend/src/api/client.ts` |
 | Auth state | `frontend/src/auth/AuthContext.tsx` |
+| Photo upload UI | `frontend/src/pages/Home.tsx` |

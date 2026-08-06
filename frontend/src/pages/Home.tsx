@@ -271,6 +271,14 @@ export function Home() {
             ) : (
               <p className="results-label">
                 {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
+                {total < 10 &&
+                  Object.values(filters).some((v) => v !== undefined && v !== "") && (
+                    <span className="results-filter-hint">
+                      {" "}
+                      — only {total} {total === 1 ? "pattern matches" : "patterns match"} these
+                      filters
+                    </span>
+                  )}
               </p>
             )}
             <ul className={paging ? "results-list is-paging" : "results-list"}>

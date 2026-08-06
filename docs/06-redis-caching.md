@@ -83,6 +83,10 @@ async def semantic_search_patterns(q, craft, difficulty, free, category, offset,
 results) plus `top_result_id`, `search_type`, and `latency_ms` — not individual
 pages. Page 2, 3, 4 are all cache hits — just different slices of the same list.
 
+**Visual search is not cached.** Each photo upload is unique bytes — hit rate would be
+near zero. Redis here is for *repeatable text queries*, not one-off uploads. See
+`12-visual-search-clip.md`.
+
 See the actual code at: `backend/app/api/patterns.py`
 
 ---

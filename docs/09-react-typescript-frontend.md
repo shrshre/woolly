@@ -29,7 +29,7 @@ Woolly's components:
 | Component | File | What it renders |
 |---|---|---|
 | `App` | `App.tsx` | Router, providers, nav, footer, route definitions |
-| `Home` | `pages/Home.tsx` | Search page: hero, filters, results, pagination |
+| `Home` | `pages/Home.tsx` | Search page: hero, text search, photo upload, filters, results, pagination |
 | `SearchBar` | `components/SearchBar.tsx` | Pill-shaped input + submit button |
 | `FilterBar` | `components/FilterBar.tsx` | Craft, difficulty, free/paid, category filters |
 | `PatternCard` | `components/PatternCard.tsx` | Result card: image, title, badges, relevance bar, save button |
@@ -68,16 +68,28 @@ const [total, setTotal] = useState(0);
 const [page, setPage] = useState(1);
 const [loading, setLoading] = useState(false);
 const [paging, setPaging] = useState(false);  // separate from initial search loading
+const [mode, setMode] = useState<"text" | "visual">("text");
+const [uploadPreview, setUploadPreview] = useState<string | null>(null);
 ```
 
-**The flow when a user searches:**
+**The flow when a user searches (text):**
 1. User types → `setQuery(...)` → input field updates
-2. User submits → `setLoading(true)` → skeleton cards appear
+2. User submits → `setLoading(true)`, `mode = "text"` → skeleton cards appear
 3. API call: `searchPatterns(query, filters, {offset: 0, limit: 10})`
 4. Response → `setPatterns(...)`, `setTotal(...)`, `setLoading(false)` → cards appear
 5. User clicks page 2 → `searchPatterns(activeQuery, filters, {offset: 10, limit: 10})`
    → backend cache hit, instant response
 6. If error → `setError(...)` → error message shows
+
+**The flow when a user searches (photo):**
+1. User picks a file → `runVisualSearch(file)` → `mode = "visual"`, preview thumbnail
+2. API call: `visualSearchPatterns(file)` → `POST /patterns/visual-search` (multipart)
+3. Same pattern cards render; relevance bar uses CLIP similarity as `rerank_score`
+4. No pagination in visual mode (single top-N page)
+5. Starting a text search clears visual mode and the preview
+
+If filters are active and text search returns fewer than 10 hits, Home shows a small hint
+that the filters may be narrowing the set.
 
 ## Auth state: AuthContext and ProtectedRoute
 
@@ -210,13 +222,22 @@ export function searchPatterns(
   // ... other filters
   return request(`/patterns/semantic-search?${params}`);
 }
+
+/** Find patterns whose photos look like the uploaded image (CLIP similarity). */
+export function visualSearchPatterns(file: File, limit = 10): Promise<PatternSearchResult> {
+  const body = new FormData();
+  body.append("file", file);
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`/patterns/visual-search?${params}`, { method: "POST", body });
+}
 ```
 
 **What this gives you:**
 - One place to change if the backend URL changes
 - `credentials: "include"` on every request for auth cookies
-- Typed interfaces for search, auth, library, and projects
+- Typed interfaces for text search, visual search, auth, library, and projects
 - Filter and pagination params built into `searchPatterns`
+- Multipart upload helper for photo search (same response shape as text search)
 
 ---
 
@@ -293,8 +314,9 @@ Be honest in interviews about what's real vs. planned:
 | UI element | Status | Notes |
 |---|---|---|
 | Search bar + filters | ✅ Real | Calls `/patterns/semantic-search` with craft, difficulty, free, category |
+| Photo / visual search | ✅ Real | Upload → `POST /patterns/visual-search` (CLIP); preview thumbnail in results |
 | Pattern cards with relevance | ✅ Real | Shows `rerank_score`, relevance label, difficulty badge |
-| Pagination | ✅ Real | Offset/limit, backend caches full list |
+| Pagination | ✅ Real | Offset/limit for text search; visual mode is single page |
 | Skeleton cards | ✅ Real | Show during loading |
 | Error state | ✅ Real | Shows API error messages |
 | Suggestion chips | ✅ Real | Populate search input and trigger search |
@@ -306,11 +328,11 @@ Be honest in interviews about what's real vs. planned:
 | Grid maker | ✅ Real | Client-side color quantization tool |
 | Ravelry account connect | ❌ Backlog | Still using app-level Ravelry credentials |
 | Recommendations engine | ❌ Backlog | |
-| Image-to-pattern search | ❌ Backlog | |
 | Public project pages | ❌ Backlog | |
 
-**Interview framing:** "The core product loop is fully wired — search, save, track projects.
-Ravelry OAuth and recommendations are on the backlog. I'm transparent about scope."
+**Interview framing:** "The core product loop is fully wired — text search, visual search,
+save, track projects. Ravelry OAuth and recommendations are on the backlog. I'm transparent
+about scope."
 
 ---
 
@@ -367,9 +389,10 @@ is as important as real performance."
 **Q: Walk me through your React architecture.**
 A: "React Router for multi-page navigation. AuthContext provides global auth state from
 httpOnly cookie sessions. SavedPatternsContext tracks bookmarks. The search page (Home) manages
-query, filters, pagination, and loading state. ProtectedRoute gates library, projects, and
-stitch counter behind login. A typed API client handles all backend communication with
-`credentials: include` for cookies."
+text vs visual mode, query, filters, pagination, photo preview, and loading state.
+ProtectedRoute gates library, projects, and stitch counter behind login. A typed API client
+handles all backend communication with `credentials: include` for cookies, including multipart
+upload for visual search."
 
 **Q: How does the frontend handle authentication?**
 A: "AuthContext calls GET /auth/me on mount. Login/register set an httpOnly cookie via the

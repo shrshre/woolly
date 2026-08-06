@@ -74,9 +74,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Without this, the first startup would download ~90MB while users wait
 
 RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
-# Same warmup for the cross-encoder reranker (~90MB). Both models load into memory
+# Same warmup for the cross-encoder reranker (~90MB). Text models load into memory
 # during FastAPI lifespan; baking weights into the image avoids HuggingFace downloads
 # on every fresh container.
+
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('clip-ViT-B-32')"
+# CLIP for visual search (~600MB). Weights are baked into the image, but the model is
+# NOT loaded into RAM at app startup — clip_service loads it lazily on first photo search.
 
 COPY ./app /code/app
 # Copy your actual application code into the container
