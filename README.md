@@ -1,17 +1,41 @@
 # Woolly
 
-A crafting companion for fiber artists (crochet and knitting). Semantic pattern search over Ravelry data: patterns are embedded locally with `all-MiniLM-L6-v2` and searched via pgvector cosine similarity, served by a FastAPI backend (cached in Redis) to a minimal React frontend.
+A full-stack crafting companion for knitters and crocheters. Woolly helps you find patterns by **intent** — plain-English queries and photos — instead of exact keyword matches, then keeps projects, a pattern library, and crafting tools in one place.
 
-Pattern data is provided by the [Ravelry API](https://www.ravelry.com/api). All patterns link back to Ravelry; Woolly caches search result metadata only.
+Pattern metadata comes from the [Ravelry API](https://www.ravelry.com/api). Results always link back to Ravelry and the original designers; Woolly stores and indexes cached pattern data for search.
+
+## Features
+
+- **Hybrid text search** — vector similarity + BM25 + designer name matching, then cross-encoder reranking
+- **Visual search** — upload a photo of a knit/crochet piece; CLIP finds visually similar patterns
+- **Filters & pagination** — craft, difficulty, free/paid, category; ranked results cached and sliced by page
+- **Accounts** — register/login with JWT in an httpOnly cookie; saved pattern library and project tracker
+- **Stitch counter** — voice-assisted counting (Web Speech API)
+- **Colorwork grid maker** — turn an image into a quantized knitting/crochet chart
+- **Background seeding** — incremental Ravelry re-seed every 24 hours, with Redis cache invalidation
+
+## How search works
+
+**Text:** query → embedding (`all-MiniLM-L6-v2`) → hybrid retrieval over Postgres/pgvector (dense + full-text + designer trigram) → cross-encoder rerank (`ms-marco-MiniLM-L-6-v2`) → filters/pagination from a Redis-cached ranked list.
+
+**Visual:** uploaded image → CLIP (`clip-ViT-B-32`, multi-crop blend) → nearest pattern `image_embedding` vectors (512-d).
+
+For deeper walkthroughs, see [`PROJECT_EXPLAINER.md`](PROJECT_EXPLAINER.md) and [`docs/`](docs/).
 
 ## Stack
 
-- **Backend:** Python / FastAPI
-- **Cache:** Redis (1-hour TTL on Ravelry proxy, 30-minute TTL on semantic search)
-- **Database:** PostgreSQL + pgvector (`patterns` table with 384-dim embeddings)
-- **Embeddings:** sentence-transformers `all-MiniLM-L6-v2`, run locally on CPU
-- **Frontend:** React + TypeScript (Vite)
-- **Containerization:** Docker + docker-compose
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, TypeScript, Vite, React Router |
+| Backend | Python 3.12, FastAPI, Uvicorn, Pydantic Settings |
+| Database | PostgreSQL 16 + pgvector + `pg_trgm` |
+| Cache | Redis 7 |
+| Auth | JWT in httpOnly cookie, bcrypt passwords |
+| Text embeddings | `sentence-transformers` `all-MiniLM-L6-v2` (384-d) |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Visual search | `clip-ViT-B-32` (512-d image embeddings) |
+| Jobs | APScheduler (24h incremental seed) |
+| Containers | Docker + docker-compose |
 
 ## Local setup
 
@@ -27,7 +51,12 @@ Pattern data is provided by the [Ravelry API](https://www.ravelry.com/api). All 
 cp .env.example .env
 ```
 
-Edit `.env` and fill in `RAVELRY_USERNAME` and `RAVELRY_PASSWORD`. Never commit `.env`.
+Fill in at least:
+
+- `RAVELRY_USERNAME` / `RAVELRY_PASSWORD`
+- `JWT_SECRET_KEY` — generate with `openssl rand -hex 32` (do not leave blank or use a weak default in any shared environment)
+
+Never commit `.env`.
 
 ### 3. Run the stack
 
@@ -35,34 +64,60 @@ Edit `.env` and fill in `RAVELRY_USERNAME` and `RAVELRY_PASSWORD`. Never commit 
 docker-compose up --build
 ```
 
-This starts:
-
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:5173 |
-| Backend API | http://localhost:8000 (docs at /docs) |
+| Backend API | http://localhost:8000 — OpenAPI at `/docs` |
+| PostgreSQL | localhost:5432 |
 | Redis | localhost:6379 |
-| PostgreSQL | localhost:5432 (unused this week) |
 
-### 4. Seed the pattern database (Week 2)
+First backend startup downloads/loads the text embedding and reranker models (CLIP loads lazily on the first visual search).
 
-Semantic search runs against locally stored patterns. Seed ~500 of them (takes a few minutes; rate-limit friendly):
+### 4. Seed patterns (required for text search)
 
 ```bash
 docker-compose exec backend python scripts/seed_patterns.py --limit 500
 ```
 
-The script is safe to re-run — already-embedded patterns are skipped.
+Safe to re-run: upserts by `ravelry_id`, skips patterns that already have embeddings. For a fuller corpus use a higher `--limit` (default is 5000). Incremental mode (also used by the nightly scheduler):
 
-### 5. Verify
+```bash
+docker-compose exec backend python scripts/seed_patterns.py --incremental
+```
 
-- Open http://localhost:5173 and try a natural-language search like "cozy winter sweater".
-- Search the same term again — the backend logs should show a Redis cache hit.
-- Or hit the API directly:
-  - Semantic search: `curl "http://localhost:8000/patterns/semantic-search?q=cozy%20winter%20sweater"`
-  - Ravelry keyword proxy (still available): `curl "http://localhost:8000/patterns/search?q=cardigan"`
+### 5. Backfill image embeddings (required for visual search)
 
-## Running backend tests
+```bash
+docker-compose exec backend python scripts/embed_images.py
+```
+
+Idempotent: only patterns with an image URL and no `image_embedding` are processed. Optional `--limit` / `--re-embed`.
+
+### 6. Try it
+
+- Open http://localhost:5173 and search something like `cozy winter sweater` or `quick gift for beginners`
+- Upload a photo of a finished object for visual search
+- Create an account to save patterns and track projects
+- API smoke checks:
+
+```bash
+curl "http://localhost:8000/health"
+curl "http://localhost:8000/patterns/semantic-search?q=cozy%20winter%20sweater"
+curl "http://localhost:8000/patterns/search?q=cardigan"   # Ravelry keyword proxy
+```
+
+## Main API routes
+
+| Area | Endpoints |
+|---|---|
+| Search | `GET /patterns/semantic-search`, `POST /patterns/visual-search`, `GET /patterns/search`, `GET /patterns/filters` |
+| Library | `POST/DELETE /patterns/{ravelry_id}/save`, `GET /users/me/library` |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
+| Projects | `GET/POST /projects`, `PATCH/DELETE /projects/{id}` |
+| Admin | `GET /admin/analytics` (requires `X-Admin-Token` when `ADMIN_API_TOKEN` is set) |
+| Health | `GET /health` |
+
+## Tests
 
 ```bash
 cd backend
@@ -76,21 +131,31 @@ pytest
 woolly/
 ├── docker-compose.yml
 ├── .env.example
+├── PROJECT_EXPLAINER.md       # interview-oriented system walkthrough
+├── docs/                      # deep dives (search, CLIP, auth, Docker, …)
 ├── backend/
 │   ├── app/
-│   │   ├── main.py            # FastAPI entrypoint
+│   │   ├── main.py            # FastAPI entrypoint, lifespan, routers
 │   │   ├── config.py          # env-based settings
-│   │   ├── api/patterns.py    # GET /patterns/search + /patterns/semantic-search
-│   │   ├── services/          # Ravelry client + embedding service
+│   │   ├── api/               # patterns, projects, users, admin
+│   │   ├── auth/              # JWT cookie auth
+│   │   ├── search/            # hybrid pipeline, filters, semantic helpers
+│   │   ├── services/          # Ravelry, embeddings, CLIP, rerank, seeding
+│   │   ├── db/                # SQLAlchemy models, session, init
 │   │   ├── cache/             # Redis helpers
-│   │   ├── db/                # SQLAlchemy Pattern model, session, init_db
-│   │   ├── search/            # pgvector semantic search
-│   │   └── auth/              # placeholder (Week 4+: JWT auth)
-│   └── scripts/
-│       └── seed_patterns.py   # seed patterns from Ravelry + embeddings
+│   │   └── scheduler.py       # 24h incremental seed
+│   ├── scripts/
+│   │   ├── seed_patterns.py
+│   │   └── embed_images.py
+│   └── tests/
 └── frontend/
     └── src/
-        ├── App.tsx            # minimal search UI
-        ├── api/client.ts      # typed fetch wrapper
-        └── components/        # placeholder (Week 3+: pattern cards)
+        ├── pages/             # Home, Library, Projects, Counter, Grid, Auth
+        ├── components/        # SearchBar, PatternCard, FilterBar, …
+        ├── api/client.ts      # typed API client
+        └── auth/              # AuthContext, SavedPatternsContext
 ```
+
+## Attribution
+
+Pattern data courtesy of [Ravelry](https://www.ravelry.com). All patterns link back to their designers.
