@@ -20,7 +20,7 @@ Pattern metadata comes from the [Ravelry API](https://www.ravelry.com/api). Resu
 
 **Visual:** uploaded image → CLIP (`clip-ViT-B-32`, multi-crop blend) → nearest pattern `image_embedding` vectors (512-d).
 
-For deeper walkthroughs, see [`PROJECT_EXPLAINER.md`](PROJECT_EXPLAINER.md) and [`docs/`](docs/).
+For a deeper walkthrough, see [`PROJECT_EXPLAINER.md`](PROJECT_EXPLAINER.md).
 
 ## Stack
 
@@ -132,7 +132,6 @@ woolly/
 ├── docker-compose.yml
 ├── .env.example
 ├── PROJECT_EXPLAINER.md       # interview-oriented system walkthrough
-├── docs/                      # deep dives (search, CLIP, auth, Docker, …)
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            # FastAPI entrypoint, lifespan, routers

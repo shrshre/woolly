@@ -1,6 +1,9 @@
 # Environment
 .env
 
+# Local study notes (kept on disk, not published)
+docs/
+
 # Python
 __pycache__/
 *.py[cod]
