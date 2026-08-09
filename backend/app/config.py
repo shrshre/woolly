@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     search_cache_ttl_seconds: int = 3600
     semantic_cache_ttl_seconds: int = 1800
+    recommendations_cache_ttl_seconds: int = 3600
 
     # PostgreSQL
     database_url: str = "postgresql://woolly:woolly@localhost:5432/woolly"

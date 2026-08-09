@@ -36,6 +36,12 @@ def embed_text(text: str) -> list[float]:
     return vector.tolist()
 
 
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed several texts in one batched model call."""
+    vectors = get_model().encode(texts, normalize_embeddings=True)
+    return [vector.tolist() for vector in vectors]
+
+
 def _yarn_weight_from_raw(raw: dict[str, Any]) -> str:
     yarn_weight = raw.get("yarn_weight") or {}
     return yarn_weight.get("name") or ""

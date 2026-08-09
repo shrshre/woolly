@@ -33,6 +33,26 @@ def semantic_cache_key(query: str, **filters: object) -> str:
     return key
 
 
+def recommendations_cache_key(user_id: int | None, limit: int) -> str:
+    """Cache key for homepage recommendations: per user, or shared for anonymous."""
+    who = f"user:{user_id}" if user_id is not None else "anon"
+    return f"recs:{who}:limit={limit}"
+
+
+async def invalidate_user_recommendations(user_id: int) -> None:
+    """Drop a user's cached recommendations (called when their library changes).
+
+    Best-effort: on Redis failure the stale entry simply expires via TTL.
+    """
+    try:
+        client = get_redis()
+        keys = [key async for key in client.scan_iter(match=f"recs:user:{user_id}:*", count=100)]
+        if keys:
+            await client.delete(*keys)
+    except redis.RedisError as exc:
+        logger.warning("Failed to invalidate recommendations for user %d (%s).", user_id, exc)
+
+
 async def get_cached(key: str) -> str | None:
     try:
         value = await get_redis().get(key)
@@ -54,8 +74,9 @@ async def set_cached(key: str, value: str, ttl_seconds: int) -> None:
 
 
 # Search-related key prefixes, invalidated after each seed run so newly
-# seeded patterns are immediately discoverable.
-SEARCH_CACHE_PREFIXES = ("patterns:search:*", "semantic:*")
+# seeded patterns are immediately discoverable (recommendations included, so
+# fresh patterns can surface on the homepage right away).
+SEARCH_CACHE_PREFIXES = ("patterns:search:*", "semantic:*", "recs:*")
 
 
 def clear_search_caches() -> int:

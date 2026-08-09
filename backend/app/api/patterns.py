@@ -16,10 +16,18 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_user_optional
-from app.cache.redis_client import get_cached, search_cache_key, semantic_cache_key, set_cached
+from app.cache.redis_client import (
+    get_cached,
+    invalidate_user_recommendations,
+    recommendations_cache_key,
+    search_cache_key,
+    semantic_cache_key,
+    set_cached,
+)
 from app.config import Settings, get_settings
 from app.db.models import Pattern, ResultInteraction, SavedPattern, SearchEvent, User
 from app.db.session import get_db, get_sessionmaker
+from app.search import recommendations as recommendations_service
 from app.search.pipeline import search as run_search_pipeline
 from app.services import clip_service, reranking_service
 from app.services.ravelry_client import (
@@ -343,6 +351,65 @@ async def get_filter_options(db: Session = Depends(get_db)) -> dict:
     return {"crafts": crafts, "categories": categories}
 
 
+class RecommendedPatternSummary(PatternSummary):
+    description: str | None = None
+    difficulty: str | None = None
+
+
+class RecommendationsResult(BaseModel):
+    patterns: list[RecommendedPatternSummary]
+    total: int
+    # "personalized" = taste-vector similarity from the user's library and
+    # search history; "popular" = engagement-ranked fallback (anonymous
+    # visitors and cold-start accounts).
+    source: Literal["personalized", "popular"]
+
+
+@router.get("/recommendations", response_model=RecommendationsResult)
+async def get_recommendations(
+    limit: int = Query(8, ge=1, le=24, description="Number of recommendations"),
+    user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> RecommendationsResult:
+    """Homepage recommendations, shown before any search.
+
+    Logged-in users with history get embedding-similarity picks based on
+    their saved patterns and recent searches (already-saved patterns are
+    excluded). Everyone else gets the popularity ranking. Responses are
+    cached per user; saving/unsaving a pattern invalidates the cache.
+    """
+    cache_key = recommendations_cache_key(user.id if user else None, limit)
+    cached = await get_cached(cache_key)
+    if cached is not None:
+        return RecommendationsResult.model_validate_json(cached)
+
+    patterns: list[Pattern] = []
+    source: Literal["personalized", "popular"] = "popular"
+    if user:
+        try:
+            personalized = recommendations_service.recommend_for_user(db, user.id, limit)
+        except Exception:
+            # Recommendations must never break the homepage; fall back to popular.
+            logger.exception("Personalized recommendations failed for user %d.", user.id)
+            personalized = None
+        if personalized:
+            patterns = personalized
+            source = "personalized"
+
+    if not patterns:
+        exclude_ids = recommendations_service.saved_pattern_ids(db, user.id) if user else None
+        patterns = recommendations_service.popular_patterns(db, limit, exclude_ids=exclude_ids)
+
+    result = RecommendationsResult(
+        patterns=[RecommendedPatternSummary(**pattern_summary_dict(p)) for p in patterns],
+        total=len(patterns),
+        source=source,
+    )
+    await set_cached(cache_key, result.model_dump_json(), settings.recommendations_cache_ttl_seconds)
+    return result
+
+
 def pattern_summary_dict(pattern: Pattern) -> dict:
     """Serialize a stored Pattern to the shared PatternSummary shape."""
     return {
@@ -376,6 +443,7 @@ async def save_pattern(
     if already is None:
         db.add(SavedPattern(user_id=user.id, pattern_id=pattern.id))
         db.commit()
+        await invalidate_user_recommendations(user.id)
 
 
 @router.delete("/{ravelry_id}/save", status_code=204)
@@ -389,6 +457,7 @@ async def unsave_pattern(
     if saved is not None:
         db.delete(saved)
         db.commit()
+        await invalidate_user_recommendations(user.id)
 
 
 class InteractionCreate(BaseModel):

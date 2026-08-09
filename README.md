@@ -9,6 +9,7 @@ Pattern metadata comes from the [Ravelry API](https://www.ravelry.com/api). Resu
 - **Hybrid text search** — vector similarity + BM25 + designer name matching, then cross-encoder reranking
 - **Visual search** — upload a photo of a knit/crochet piece; CLIP finds visually similar patterns
 - **Filters & pagination** — craft, difficulty, free/paid, category; ranked results cached and sliced by page
+- **Recommendations** — homepage picks from a "taste vector" built from your saved patterns and recent searches, with a popularity fallback for new and anonymous visitors
 - **Accounts** — register/login with JWT in an httpOnly cookie; saved pattern library and project tracker
 - **Stitch counter** — voice-assisted counting (Web Speech API)
 - **Colorwork grid maker** — turn an image into a quantized knitting/crochet chart
@@ -111,6 +112,7 @@ curl "http://localhost:8000/patterns/search?q=cardigan"   # Ravelry keyword prox
 | Area | Endpoints |
 |---|---|
 | Search | `GET /patterns/semantic-search`, `POST /patterns/visual-search`, `GET /patterns/search`, `GET /patterns/filters` |
+| Recommendations | `GET /patterns/recommendations` |
 | Library | `POST/DELETE /patterns/{ravelry_id}/save`, `GET /users/me/library` |
 | Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
 | Projects | `GET/POST /projects`, `PATCH/DELETE /projects/{id}` |

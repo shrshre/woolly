@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 import { FilterBar } from "../components/FilterBar";
 import { PatternCard } from "../components/PatternCard";
+import { RecommendedPatterns } from "../components/RecommendedPatterns";
 import { SearchBar } from "../components/SearchBar";
 import { SkeletonCard } from "../components/SkeletonCard";
 
@@ -213,6 +214,8 @@ export function Home() {
         </div>
         <FilterBar filters={filters} onChange={handleFilters} />
       </header>
+
+      {!loading && !error && !activeQuery && <RecommendedPatterns />}
 
       <section className="results" ref={resultsRef}>
         {loading && (

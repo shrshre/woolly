@@ -110,6 +110,19 @@ export function fetchFilterOptions(): Promise<{ crafts: string[]; categories: st
   return request("/patterns/filters");
 }
 
+// ---------- Recommendations ----------
+
+export interface Recommendations {
+  patterns: PatternSummary[];
+  total: number;
+  /** "personalized" = from your library + search history; "popular" = engagement-ranked fallback. */
+  source: "personalized" | "popular";
+}
+
+export function fetchRecommendations(limit = 8): Promise<Recommendations> {
+  return request(`/patterns/recommendations?limit=${limit}`);
+}
+
 // ---------- Auth ----------
 
 export interface User {

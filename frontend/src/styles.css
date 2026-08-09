@@ -292,6 +292,51 @@ body {
   transition: opacity 0.1s ease;
 }
 
+/* ---------- Homepage recommendations ---------- */
+
+.recs {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 2rem 3rem;
+}
+
+.recs-title {
+  font-family: "Playfair Display", Georgia, serif;
+  font-size: 24px;
+  font-weight: 500;
+  color: #2c1810;
+  text-align: center;
+  margin: 0 0 4px;
+}
+
+.recs-subtitle {
+  font-size: 13px;
+  color: #9e7b6a;
+  text-align: center;
+  margin: 0 0 1.5rem;
+}
+
+.recs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  align-items: stretch;
+}
+
+.recs-grid > li > .card,
+.recs-grid > li > .skeleton-card {
+  height: 100%;
+}
+
+@media (max-width: 760px) {
+  .recs-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---------- Visual (photo) search ---------- */
 
 .chip-photo i {
