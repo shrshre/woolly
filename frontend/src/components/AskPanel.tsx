@@ -7,14 +7,15 @@ import {
   type SearchFilters,
 } from "../api/client";
 import { PatternCard } from "./PatternCard";
+import { RotatingSearchInput } from "./RotatingSearchInput";
 import { SkeletonCard } from "./SkeletonCard";
 
-const ASK_SUGGESTIONS = [
+const ASK_SAMPLES = [
   "a beginner gift I can finish this weekend",
   "cabled cardigan in worsted, nothing seamed",
   "free crochet baby blanket",
   "something to use up leftover sock yarn",
-];
+] as const;
 
 // Turns replayed to the server for follow-up context. Matches the backend's
 // own history cap, so nothing is sent that would only be trimmed there.
@@ -50,6 +51,7 @@ export function AskPanel() {
   const endRef = useRef<HTMLDivElement>(null);
 
   const busy = pending !== null;
+  const followUpPlaceholder = 'Ask a follow-up, like “cheaper ones?”';
 
   useEffect(() => {
     if (exchanges.length > 0 || busy) {
@@ -94,38 +96,19 @@ export function AskPanel() {
         <span className="search-icon">
           <i className="ti ti-message-circle" aria-hidden="true"></i>
         </span>
-        <input
-          type="text"
-          className="search-input"
+        <RotatingSearchInput
           value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder={
-            exchanges.length > 0
-              ? "Ask a follow-up, like “cheaper ones?”"
-              : "Tell Woolly what you want to make"
-          }
-          aria-label="Ask Woolly about patterns"
+          onChange={setQuestion}
           disabled={busy}
+          ariaLabel="Ask Woolly about patterns"
+          samples={ASK_SAMPLES}
+          staticPlaceholder={exchanges.length > 0 ? followUpPlaceholder : undefined}
+          pauseRotation={busy}
         />
         <button type="submit" className="search-submit" aria-label="Ask" disabled={busy}>
           <i className="ti ti-arrow-right" aria-hidden="true"></i>
         </button>
       </form>
-
-      {exchanges.length === 0 && !busy && (
-        <div className="chips">
-          {ASK_SUGGESTIONS.map((suggestion) => (
-            <button
-              key={suggestion}
-              type="button"
-              className="chip"
-              onClick={() => void send(suggestion)}
-            >
-              {suggestion}
-            </button>
-          ))}
-        </div>
-      )}
 
       <div className="ask-transcript" aria-live="polite">
         {exchanges.map((exchange, index) => (

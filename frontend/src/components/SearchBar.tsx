@@ -1,3 +1,13 @@
+import { RotatingSearchInput } from "./RotatingSearchInput";
+
+const SEARCH_SAMPLES = [
+  "cozy winter sweater",
+  "quick gift for beginners",
+  "no seaming required",
+  "colorful stranded project",
+  "something for my cat",
+] as const;
+
 interface SearchBarProps {
   value: string;
   onChange: (value: string) => void;
@@ -17,13 +27,12 @@ export function SearchBar({ value, onChange, onSubmit, disabled }: SearchBarProp
       <span className="search-icon">
         <i className="ti ti-search" aria-hidden="true"></i>
       </span>
-      <input
-        type="text"
-        className="search-input"
+      <RotatingSearchInput
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Try “cozy winter sweater” or “quick gift for beginners”"
-        aria-label="Search patterns"
+        onChange={onChange}
+        disabled={disabled}
+        ariaLabel="Search patterns"
+        samples={SEARCH_SAMPLES}
       />
       <button type="submit" className="search-submit" aria-label="Search" disabled={disabled}>
         <i className="ti ti-arrow-right" aria-hidden="true"></i>

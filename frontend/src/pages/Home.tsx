@@ -14,14 +14,6 @@ import { RecommendedPatterns } from "../components/RecommendedPatterns";
 import { SearchBar } from "../components/SearchBar";
 import { SkeletonCard } from "../components/SkeletonCard";
 
-const SUGGESTIONS = [
-  "cozy winter sweater",
-  "quick gift for beginners",
-  "no seaming required",
-  "colorful stranded project",
-  "something for my cat",
-];
-
 const PAGE_SIZE = 10;
 
 export function Home() {
@@ -133,11 +125,6 @@ export function Home() {
     if (file) void runVisualSearch(file);
   }
 
-  function handleSuggestion(term: string) {
-    setQuery(term);
-    void runSearch(term);
-  }
-
   function handleFilters(next: SearchFilters) {
     setFilters(next);
     // Re-run the current search from page one with the new filters, if there is one
@@ -231,12 +218,7 @@ export function Home() {
               onSubmit={() => void runSearch(query)}
               disabled={loading}
             />
-            <div className="chips">
-              {SUGGESTIONS.map((s) => (
-                <button key={s} type="button" className="chip" onClick={() => handleSuggestion(s)}>
-                  {s}
-                </button>
-              ))}
+            <div className="photo-search">
               <button
                 type="button"
                 className="chip chip-photo"

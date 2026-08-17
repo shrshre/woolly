@@ -134,6 +134,36 @@ body {
   pointer-events: none;
 }
 
+.search-input-wrap {
+  position: relative;
+  width: 100%;
+  height: 48px;
+}
+
+.search-placeholder {
+  position: absolute;
+  inset: 0;
+  padding: 0 52px 0 48px;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  color: #9e7b6a;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.search-placeholder-sample {
+  opacity: 1;
+  transition: opacity 0.45s ease;
+}
+
+.search-placeholder-sample.is-fading {
+  opacity: 0;
+}
+
 .search-input {
   width: 100%;
   height: 48px;
@@ -175,6 +205,12 @@ body {
 }
 
 /* ---------- Suggestion chips ---------- */
+
+.photo-search {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
 
 .chips {
   display: flex;
