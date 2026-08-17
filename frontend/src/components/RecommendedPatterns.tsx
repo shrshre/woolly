@@ -51,7 +51,7 @@ export function RecommendedPatterns() {
             : "Loved by the Woolly community"}
         </p>
       )}
-      <ul className="recs-grid">
+      <ul className="recs-list">
         {showLoading
           ? Array.from({ length: 4 }, (_, i) => (
               <li key={i}>

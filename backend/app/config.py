@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     search_cache_ttl_seconds: int = 3600
     semantic_cache_ttl_seconds: int = 1800
     recommendations_cache_ttl_seconds: int = 3600
+    ask_cache_ttl_seconds: int = 1800
+
+    # Conversational search (RAG). Empty openai_api_key disables the feature:
+    # /patterns/ask/capability reports it unavailable and the UI hides it.
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    llm_timeout_seconds: float = 20.0
+    # Asks allowed per hour per account (or per browser session when anonymous).
+    ask_rate_limit_per_hour: int = 10
 
     # PostgreSQL
     database_url: str = "postgresql://woolly:woolly@localhost:5432/woolly"

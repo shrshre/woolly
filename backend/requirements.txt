@@ -19,6 +19,9 @@ apscheduler>=3.10,<4.0
 pillow>=10.0
 python-multipart>=0.0.9
 
+# Conversational search: chat completions for the RAG answer step
+openai>=1.40,<2.0
+
 # Auth: JWT in httpOnly cookie + bcrypt password hashing
 bcrypt>=4.1,<5.0
 PyJWT>=2.8,<3.0

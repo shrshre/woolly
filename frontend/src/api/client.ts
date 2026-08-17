@@ -110,6 +110,37 @@ export function fetchFilterOptions(): Promise<{ crafts: string[]; categories: st
   return request("/patterns/filters");
 }
 
+// ---------- Ask Woolly (conversational search) ----------
+
+export interface AskTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AskResult {
+  question: string;
+  answer: string;
+  /** The patterns the answer is grounded in, in citation order: [1] is patterns[0]. */
+  patterns: PatternSummary[];
+  /** How the question was actually searched, after filter extraction. */
+  search_query: string;
+  filters_used: SearchFilters;
+  /** True when the extracted filters matched nothing and were dropped. */
+  filters_relaxed: boolean;
+  search_event_id?: number | null;
+}
+
+/** Whether the server has conversational search configured (needs an LLM key). */
+export function fetchAskCapability(): Promise<{ available: boolean }> {
+  return request("/patterns/ask/capability");
+}
+
+/** Ask a question in plain English. History is prior turns, oldest first. */
+export function askPatterns(question: string, history: AskTurn[] = []): Promise<AskResult> {
+  const params = new URLSearchParams({ session_id: getSessionId() });
+  return request(`/patterns/ask?${params.toString()}`, jsonBody("POST", { question, history }));
+}
+
 // ---------- Recommendations ----------
 
 export interface Recommendations {

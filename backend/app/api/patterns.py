@@ -11,13 +11,16 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.cache.redis_client import (
+    ask_cache_key,
+    ask_rate_limit_key,
     get_cached,
+    increment_rate_limit,
     invalidate_user_recommendations,
     recommendations_cache_key,
     search_cache_key,
@@ -27,9 +30,10 @@ from app.cache.redis_client import (
 from app.config import Settings, get_settings
 from app.db.models import Pattern, ResultInteraction, SavedPattern, SearchEvent, User
 from app.db.session import get_db, get_sessionmaker
+from app.search import conversational
 from app.search import recommendations as recommendations_service
 from app.search.pipeline import search as run_search_pipeline
-from app.services import clip_service, reranking_service
+from app.services import clip_service, llm_service, reranking_service
 from app.services.ravelry_client import (
     PatternProvider,
     PatternSearchResult,
@@ -323,6 +327,143 @@ async def visual_search_patterns(
         query=VISUAL_SEARCH_QUERY_LABEL,
         patterns=patterns,
         total=len(patterns),
+        search_event_id=search_event_id,
+    )
+
+
+class AskTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=500)
+    # Prior turns, oldest first. Held by the client, not the server: a
+    # conversation is scratch context for the model, not saved state.
+    history: list[AskTurn] = Field(default_factory=list, max_length=20)
+
+
+class AskResult(BaseModel):
+    question: str
+    answer: str
+    # The patterns the answer is grounded in, in citation order — patterns[0]
+    # is "[1]" in the answer text.
+    patterns: list[SemanticPatternSummary]
+    # What the question was actually searched as, and the filters extracted
+    # from it. Surfaced so the user can see (and correct) the interpretation.
+    search_query: str
+    filters_used: dict
+    # True when those filters matched nothing and were dropped to find these.
+    filters_relaxed: bool
+    search_event_id: int | None = None
+
+
+ASK_RATE_LIMIT_WINDOW_SECONDS = 3600
+
+
+@router.get("/ask/capability")
+async def ask_capability() -> dict[str, bool]:
+    """Whether conversational search is configured, so the UI can hide it."""
+    return {"available": llm_service.is_configured()}
+
+
+@router.post("/ask", response_model=AskResult)
+async def ask_patterns(
+    body: AskRequest,
+    session_id: str | None = Query(None, description="Anonymous browser session id, for analytics"),
+    user: User | None = Depends(get_current_user_optional),
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AskResult:
+    """Answer a natural-language crafting question with grounded pattern picks.
+
+    Retrieval is the same hybrid + rerank pipeline the search bar uses; the
+    model only chooses among and explains what that pipeline returned. Logged
+    as a search_event with search_type "rag" so the returned cards keep working
+    with the existing save/click interaction tracking.
+    """
+    if not llm_service.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Conversational search is not configured on this server.",
+        )
+
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    session_id = session_id or str(uuid.uuid4())
+    history = [turn.model_dump() for turn in body.history]
+
+    cache_key = ask_cache_key(question, [f"{t['role']}:{t['content']}" for t in history])
+    started = time.perf_counter()
+    cached = await get_cached(cache_key)
+    cache_hit = cached is not None
+
+    if cache_hit:
+        envelope = json.loads(cached)
+        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+    else:
+        # Only a miss costs a model call, so only a miss counts against quota.
+        identity = f"user:{user.id}" if user else f"session:{session_id}"
+        used = await increment_rate_limit(
+            ask_rate_limit_key(identity), ASK_RATE_LIMIT_WINDOW_SECONDS
+        )
+        if used is not None and used > settings.ask_rate_limit_per_hour:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"You've used all {settings.ask_rate_limit_per_hour} questions for this hour. "
+                    "Try again later, or use the search bar."
+                ),
+            )
+
+        try:
+            outcome = await conversational.ask(db, question, history)
+        except llm_service.LLMUnavailableError as exc:
+            logger.warning("Ask failed for %r: %s", question, exc)
+            raise HTTPException(
+                status_code=503,
+                detail="The assistant is unavailable right now. Please try again in a moment.",
+            ) from exc
+        except Exception as exc:  # DB down, patterns table missing, etc.
+            logger.exception("Ask retrieval failed for %r.", question)
+            raise HTTPException(
+                status_code=503,
+                detail="Search is unavailable. Has the database been seeded?",
+            ) from exc
+
+        envelope = {
+            "answer": outcome.answer,
+            "patterns": outcome.patterns,
+            "search_query": outcome.search_query,
+            "filters_used": outcome.filters,
+            "filters_relaxed": outcome.filters_relaxed,
+            "top_result_id": outcome.top_result_id,
+        }
+        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+        await set_cached(cache_key, json.dumps(envelope), settings.ask_cache_ttl_seconds)
+
+    search_event_id = _log_search_event(
+        db,
+        session_id=session_id,
+        user_id=user.id if user else None,
+        query=question,
+        filters=envelope.get("filters_used") or {},
+        result_count=len(envelope["patterns"]),
+        top_result_id=envelope.get("top_result_id"),
+        latency_ms=latency_ms,
+        cache_hit=cache_hit,
+        search_type="rag",
+    )
+
+    return AskResult(
+        question=question,
+        answer=envelope["answer"],
+        patterns=[SemanticPatternSummary(**row) for row in envelope["patterns"]],
+        search_query=envelope["search_query"],
+        filters_used=envelope.get("filters_used") or {},
+        filters_relaxed=bool(envelope.get("filters_relaxed")),
         search_event_id=search_event_id,
     )
 

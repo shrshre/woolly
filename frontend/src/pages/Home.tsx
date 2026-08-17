@@ -1,11 +1,13 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ApiError,
+  fetchAskCapability,
   searchPatterns,
   visualSearchPatterns,
   type PatternSummary,
   type SearchFilters,
 } from "../api/client";
+import { AskPanel } from "../components/AskPanel";
 import { FilterBar } from "../components/FilterBar";
 import { PatternCard } from "../components/PatternCard";
 import { RecommendedPatterns } from "../components/RecommendedPatterns";
@@ -36,8 +38,18 @@ export function Home() {
   // "visual" after a photo upload: results are CLIP image matches, no pagination.
   const [mode, setMode] = useState<"text" | "visual">("text");
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  // Search bar vs conversational assistant. The Ask tab only appears when the
+  // server has an LLM configured.
+  const [tab, setTab] = useState<"search" | "ask">("search");
+  const [askAvailable, setAskAvailable] = useState(false);
   const resultsRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetchAskCapability()
+      .then((capability) => setAskAvailable(capability.available))
+      .catch(() => setAskAvailable(false));
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -178,46 +190,79 @@ export function Home() {
   return (
     <>
       <header className="hero">
-        <p className="hero-eyebrow">Semantic pattern search</p>
+        <p className="hero-eyebrow">
+          {tab === "ask" ? "Ask Woolly" : "Semantic pattern search"}
+        </p>
         <h1 className="hero-title">Find the pattern you're imagining</h1>
         <p className="hero-subtitle">
-          Describe what you want to make in your own words — Woolly understands intent, not just
-          keywords.
+          {tab === "ask"
+            ? "Describe your project, your yarn, or who it's for — Woolly picks patterns from its library and explains why they fit."
+            : "Describe what you want to make in your own words — Woolly understands intent, not just keywords."}
         </p>
-        <SearchBar
-          value={query}
-          onChange={setQuery}
-          onSubmit={() => void runSearch(query)}
-          disabled={loading}
-        />
-        <div className="chips">
-          {SUGGESTIONS.map((s) => (
-            <button key={s} type="button" className="chip" onClick={() => handleSuggestion(s)}>
-              {s}
+
+        {askAvailable && (
+          <div className="mode-toggle" role="tablist" aria-label="How to find patterns">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "search"}
+              className={tab === "search" ? "mode-tab active" : "mode-tab"}
+              onClick={() => setTab("search")}
+            >
+              <i className="ti ti-search" aria-hidden="true"></i> Search
             </button>
-          ))}
-          <button
-            type="button"
-            className="chip chip-photo"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading}
-          >
-            <i className="ti ti-camera" aria-hidden="true"></i> Search by photo
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            onChange={handleFileChange}
-            hidden
-          />
-        </div>
-        <FilterBar filters={filters} onChange={handleFilters} />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "ask"}
+              className={tab === "ask" ? "mode-tab active" : "mode-tab"}
+              onClick={() => setTab("ask")}
+            >
+              <i className="ti ti-message-circle" aria-hidden="true"></i> Ask Woolly
+            </button>
+          </div>
+        )}
+
+        {tab === "search" && (
+          <>
+            <SearchBar
+              value={query}
+              onChange={setQuery}
+              onSubmit={() => void runSearch(query)}
+              disabled={loading}
+            />
+            <div className="chips">
+              {SUGGESTIONS.map((s) => (
+                <button key={s} type="button" className="chip" onClick={() => handleSuggestion(s)}>
+                  {s}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="chip chip-photo"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+              >
+                <i className="ti ti-camera" aria-hidden="true"></i> Search by photo
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                onChange={handleFileChange}
+                hidden
+              />
+            </div>
+            <FilterBar filters={filters} onChange={handleFilters} />
+          </>
+        )}
       </header>
 
-      {!loading && !error && !activeQuery && <RecommendedPatterns />}
+      {tab === "ask" && <AskPanel />}
 
-      <section className="results" ref={resultsRef}>
+      {tab === "search" && !loading && !error && !activeQuery && <RecommendedPatterns />}
+
+      <section className="results" ref={resultsRef} hidden={tab !== "search"}>
         {loading && (
           <ul className="results-list">
             {[0, 1, 2].map((i) => (
