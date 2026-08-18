@@ -28,11 +28,14 @@ class UserOut(BaseModel):
 
 
 def _set_auth_cookie(response: Response, token: str, settings: Settings) -> None:
+    # Cross-origin frontend (e.g. Vercel) + API (e.g. Railway) needs SameSite=None
+    # with Secure=True so the browser sends the cookie on credentialed fetches.
+    samesite: str = "none" if settings.cookie_secure else "lax"
     response.set_cookie(
         key=settings.auth_cookie_name,
         value=token,
         httponly=True,
-        samesite="lax",
+        samesite=samesite,
         secure=settings.cookie_secure,
         max_age=settings.jwt_expires_days * 86400,
         path="/",
@@ -76,7 +79,13 @@ def login(
 
 @router.post("/logout", status_code=204)
 def logout(response: Response, settings: Settings = Depends(get_settings)) -> None:
-    response.delete_cookie(key=settings.auth_cookie_name, path="/")
+    samesite: str = "none" if settings.cookie_secure else "lax"
+    response.delete_cookie(
+        key=settings.auth_cookie_name,
+        path="/",
+        secure=settings.cookie_secure,
+        samesite=samesite,
+    )
 
 
 @router.get("/me", response_model=UserOut)
