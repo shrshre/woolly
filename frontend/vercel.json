@@ -1,3 +1,33 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    {
+      "source": "/auth/:path*",
+      "destination": "https://woolly-production-9099.up.railway.app/auth/:path*"
+    },
+    {
+      "source": "/patterns/:path*",
+      "destination": "https://woolly-production-9099.up.railway.app/patterns/:path*"
+    },
+    {
+      "source": "/projects/:path*",
+      "destination": "https://woolly-production-9099.up.railway.app/projects/:path*"
+    },
+    {
+      "source": "/projects",
+      "destination": "https://woolly-production-9099.up.railway.app/projects"
+    },
+    {
+      "source": "/users/:path*",
+      "destination": "https://woolly-production-9099.up.railway.app/users/:path*"
+    },
+    {
+      "source": "/admin/:path*",
+      "destination": "https://woolly-production-9099.up.railway.app/admin/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://woolly-production-9099.up.railway.app/health"
+    },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

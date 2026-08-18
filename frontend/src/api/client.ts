@@ -2,7 +2,11 @@
 
 import { getSessionId } from "../utils/session";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// Production Vercel builds use same-origin API proxy (vercel.json → Railway).
+// Local dev defaults to the docker-compose backend on :8000.
+const API_URL =
+  import.meta.env.VITE_API_URL ??
+  (import.meta.env.PROD ? "" : "http://localhost:8000");
 
 export interface PatternSummary {
   id: number;
