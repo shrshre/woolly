@@ -2,11 +2,10 @@
 
 import { getSessionId } from "../utils/session";
 
-// Production Vercel builds use same-origin API proxy (vercel.json → Railway).
-// Local dev defaults to the docker-compose backend on :8000.
-const API_URL =
-  import.meta.env.VITE_API_URL ??
-  (import.meta.env.PROD ? "" : "http://localhost:8000");
+// Production: /api/* is proxied to Railway (vercel.json). Avoids clashing with
+// SPA routes like /projects and /library, and keeps auth cookies same-origin.
+// Local dev talks to the docker-compose backend directly.
+const API_URL = import.meta.env.PROD ? "/api" : (import.meta.env.VITE_API_URL ?? "http://localhost:8000");
 
 export interface PatternSummary {
   id: number;

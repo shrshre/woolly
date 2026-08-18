@@ -19,13 +19,17 @@ body {
 /* ---------- Nav ---------- */
 
 .nav {
-  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 56px;
   padding: 0 2rem;
   background: #faf7f2;
   border-bottom: 1px solid #e8e0d5;
+}
+
+.nav-top {
+  display: contents;
 }
 
 .nav-logo {
@@ -40,6 +44,42 @@ body {
   color: #c9a800;
 }
 
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid #e8e0d5;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.nav-toggle-bar {
+  display: block;
+  width: 18px;
+  height: 2px;
+  margin: 0 auto;
+  background: #6b4c3b;
+  border-radius: 1px;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(1) {
+  transform: translateY(7px) rotate(45deg);
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(2) {
+  opacity: 0;
+}
+
+.nav-toggle[aria-expanded="true"] .nav-toggle-bar:nth-child(3) {
+  transform: translateY(-7px) rotate(-45deg);
+}
+
 .nav-right {
   display: flex;
   align-items: center;
@@ -51,6 +91,66 @@ body {
   font-weight: 400;
   color: #6b4c3b;
   text-decoration: none;
+}
+
+.nav-auth-link {
+  text-decoration: none;
+}
+
+@media (max-width: 768px) {
+  .nav {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .nav-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 56px;
+    padding: 0 1rem;
+  }
+
+  .nav-toggle {
+    display: flex;
+    flex-shrink: 0;
+  }
+
+  .nav-right {
+    display: none;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 0.5rem 1rem 1rem;
+    border-top: 1px solid #e8e0d5;
+  }
+
+  .nav-right--open {
+    display: flex;
+  }
+
+  .nav-link {
+    padding: 0.75rem 0;
+    font-size: 15px;
+    border-bottom: 1px solid #f0ebe3;
+  }
+
+  .nav-link:last-of-type {
+    border-bottom: none;
+  }
+
+  .nav-user {
+    padding: 0.75rem 0 0.25rem;
+    font-size: 13px;
+    word-break: break-all;
+  }
+
+  .nav-auth-btn {
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 10px 16px;
+  }
 }
 
 .btn-primary {

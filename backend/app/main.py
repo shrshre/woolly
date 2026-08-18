@@ -40,6 +40,7 @@ app = FastAPI(
     description="Crafting companion for fiber artists. Pattern data courtesy of the Ravelry API.",
     version="0.2.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 app.add_middleware(
