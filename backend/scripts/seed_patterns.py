@@ -41,12 +41,22 @@ def main() -> None:
         action="store_true",
         help="Only fetch patterns recently added to Ravelry (what the scheduler runs nightly)",
     )
+    parser.add_argument(
+        "--skip-images",
+        action="store_true",
+        help="Skip CLIP image backfill after text seeding (saves ~600MB RAM; run embed_images.py later)",
+    )
     args = parser.parse_args()
 
     logger.info("Initializing database (idempotent)...")
     init_db()
 
-    summary = run_seed(limit=args.limit, re_embed=args.re_embed, incremental=args.incremental)
+    summary = run_seed(
+        limit=args.limit,
+        re_embed=args.re_embed,
+        incremental=args.incremental,
+        skip_images=args.skip_images,
+    )
     logger.info(
         "Done. Seed run #%d %s: %d added, %d updated.",
         summary["seed_run_id"], summary["status"], summary["added"], summary["updated"],

@@ -229,6 +229,7 @@ def run_seed(
     limit: int,
     re_embed: bool = False,
     incremental: bool = False,
+    skip_images: bool = False,
 ) -> dict[str, Any]:
     """Execute one seed run and log it to the seed_runs table.
 
@@ -317,13 +318,17 @@ def run_seed(
 
         # Visual search: embed photos of any patterns still missing image
         # embeddings (newly seeded ones, plus earlier failures). Best-effort —
-        # a failure here must not fail the seed run.
-        try:
-            from app.services.clip_service import embed_missing_images
+        # a failure here must not fail the seed run. Skip on large/low-RAM runs
+        # and run scripts/embed_images.py separately.
+        if not skip_images:
+            try:
+                from app.services.clip_service import embed_missing_images
 
-            embed_missing_images(session, limit=limit or None)
-        except Exception:
-            logger.exception("Image embedding backfill failed; will retry next run.")
+                embed_missing_images(session, limit=min(limit, 500) if limit else 500)
+            except Exception:
+                logger.exception("Image embedding backfill failed; will retry next run.")
+        else:
+            logger.info("Skipping image backfill (--skip-images). Run embed_images.py when ready.")
 
         status = "completed"
     except Exception:
