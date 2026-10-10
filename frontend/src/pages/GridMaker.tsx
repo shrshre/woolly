@@ -7,10 +7,23 @@ const MAX_DIM = 50;
 const MAX_COLORS = 8;
 const CANVAS_MAX_PX = 600;
 const EXPORT_CELL_PX = 24;
+const AXIS_FONT_PX = 11;
+const EDGE_PAD = 4; // keeps the top/right border lines inside the canvas
 
 const DEFAULT_PALETTE = ["#800020", "#c9a800", "#2c1810", "#e8e0d5"];
 
 type Cells = (string | null)[];
+
+// Dark text on light cells, light text on dark cells
+function textColorFor(color: string | null): string {
+  if (!color) return "#9e7b6a";
+  const hex = color.replace("#", "");
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.55 ? "#2c1810" : "#ffffff";
+}
 
 function resizeCells(cells: Cells, oldW: number, oldH: number, newW: number, newH: number): Cells {
   const next: Cells = new Array(newW * newH).fill(null);
@@ -31,12 +44,20 @@ export function GridMaker() {
   const [erasing, setErasing] = useState(false);
   const [detail, setDetail] = useState(32);
   const [colorCount, setColorCount] = useState(6);
+  const [showCellNumbers, setShowCellNumbers] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const paintingRef = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const cellPx = Math.max(6, Math.floor(CANVAS_MAX_PX / Math.max(width, height)));
+  const gutter = Math.max(AXIS_FONT_PX * 2 + 6, 22);
+  const gridW = width * cellPx;
+  const gridH = height * cellPx;
+  const totalW = gutter + gridW + EDGE_PAD;
+  const totalH = EDGE_PAD + gridH + gutter;
+  // Label every cell when there's room, otherwise every 5th
+  const labelStep = cellPx >= AXIS_FONT_PX * 1.6 ? 1 : 5;
 
   // Redraw the canvas whenever the grid changes
   useEffect(() => {
@@ -44,46 +65,97 @@ export function GridMaker() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
 
-    canvas.width = width * cellPx;
-    canvas.height = height * cellPx;
+    // Render at device resolution so thin gridlines don't vanish on retina / when scaled
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(totalW * dpr);
+    canvas.height = Math.round(totalH * dpr);
+    canvas.style.width = `${totalW}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, totalW, totalH);
+
+    const ox = gutter;
+    const oy = EDGE_PAD;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const color = cells[y * width + x];
         if (color) {
           ctx.fillStyle = color;
-          ctx.fillRect(x * cellPx, y * cellPx, cellPx, cellPx);
+          ctx.fillRect(ox + x * cellPx, oy + y * cellPx, cellPx, cellPx);
         }
       }
     }
 
-    // Gridlines
-    ctx.strokeStyle = "#e8e0d5";
-    ctx.lineWidth = 1;
-    for (let x = 0; x <= width; x++) {
+    // Per-cell stitch numbers (stitch position within the row)
+    if (showCellNumbers) {
+      const fontPx = Math.max(5, Math.floor(cellPx * (width >= 10 ? 0.4 : 0.5)));
+      ctx.font = `${fontPx}px "Source Sans 3", system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          ctx.fillStyle = textColorFor(cells[y * width + x]);
+          ctx.fillText(String(x + 1), ox + (x + 0.5) * cellPx, oy + (y + 0.5) * cellPx);
+        }
+      }
+    }
+
+    // Gridlines, with a heavier line every 10 stitches/rows to help counting
+    const drawLine = (x1: number, y1: number, x2: number, y2: number, heavy: boolean) => {
+      ctx.strokeStyle = heavy ? "#9e7b6a" : "#d9cfc3";
+      ctx.lineWidth = heavy ? 1.5 : 1;
       ctx.beginPath();
-      ctx.moveTo(x * cellPx + 0.5, 0);
-      ctx.lineTo(x * cellPx + 0.5, height * cellPx);
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
       ctx.stroke();
+    };
+    for (let x = 0; x <= width; x++) {
+      const px = ox + x * cellPx;
+      drawLine(px, oy, px, oy + gridH, x % 10 === 0 && x !== 0 && x !== width);
     }
     for (let y = 0; y <= height; y++) {
-      ctx.beginPath();
-      ctx.moveTo(0, y * cellPx + 0.5);
-      ctx.lineTo(width * cellPx, y * cellPx + 0.5);
-      ctx.stroke();
+      const py = oy + y * cellPx;
+      const row = height - y; // rows count up from the bottom
+      drawLine(ox, py, ox + gridW, py, row % 10 === 0 && row !== 0 && row !== height);
     }
-  }, [cells, width, height, cellPx]);
+    // Outer border
+    ctx.strokeStyle = "#9e7b6a";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(ox, oy, gridW, gridH);
+
+    // Axis numbers: stitches along the bottom (left to right), rows up the left (bottom to top)
+    ctx.fillStyle = "#6b4c3b";
+    ctx.font = `${AXIS_FONT_PX}px "Source Sans 3", system-ui, sans-serif`;
+    ctx.textBaseline = "top";
+    ctx.textAlign = "center";
+    for (let x = 0; x < width; x++) {
+      const n = x + 1;
+      if (labelStep === 1 || n === 1 || n % labelStep === 0) {
+        ctx.fillText(String(n), ox + (x + 0.5) * cellPx, oy + gridH + 5);
+      }
+    }
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    for (let y = 0; y < height; y++) {
+      const n = height - y;
+      if (labelStep === 1 || n === 1 || n % labelStep === 0) {
+        ctx.fillText(String(n), ox - 5, oy + (y + 0.5) * cellPx);
+      }
+    }
+  }, [cells, width, height, cellPx, gutter, gridW, gridH, totalW, totalH, labelStep, showCellNumbers]);
 
   function paintAt(event: PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor(((event.clientX - rect.left) / rect.width) * width);
-    const y = Math.floor(((event.clientY - rect.top) / rect.height) * height);
-    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const scale = rect.width / totalW; // canvas may be shrunk to fit on small screens
+    const localX = (event.clientX - rect.left) / scale - gutter;
+    const localY = (event.clientY - rect.top) / scale - EDGE_PAD;
+    const x = Math.floor(localX / cellPx);
+    const y = Math.floor(localY / cellPx);
+    if (localX < 0 || localY < 0 || x >= width || y >= height) return;
 
     const value = erasing ? null : palette[activeColor];
     setCells((prev) => {
@@ -288,6 +360,14 @@ export function GridMaker() {
               aria-pressed={erasing}
             >
               <i className="ti ti-eraser" aria-hidden="true"></i> Eraser
+            </button>
+            <button
+              type="button"
+              className={showCellNumbers ? "btn-ghost tool-active" : "btn-ghost"}
+              onClick={() => setShowCellNumbers((v) => !v)}
+              aria-pressed={showCellNumbers}
+            >
+              <i className="ti ti-numbers" aria-hidden="true"></i> Cell numbers
             </button>
           </div>
 

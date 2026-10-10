@@ -1480,6 +1480,7 @@ body {
 
 .grid-canvas {
   max-width: 100%;
+  height: auto;
   cursor: crosshair;
   touch-action: none;
 }
@@ -1600,6 +1601,9 @@ body {
 
 .grid-tools {
   margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .tool-active {
