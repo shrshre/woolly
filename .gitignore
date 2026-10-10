@@ -4,6 +4,11 @@
 # Local study notes (kept on disk, not published)
 docs/
 
+# Eval run output and personal test photos
+backend/evals/results/
+backend/evals/images/*
+!backend/evals/images/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]

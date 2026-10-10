@@ -16,11 +16,10 @@ from app.search.conversational import (
 from app.services import llm_service
 
 CRAFTS = ["Knitting", "Crochet"]
-CATEGORIES = ["Cardigan", "Hat", "Baby Blanket"]
 
 
 def _extract(raw: dict, question: str = "something cosy") -> tuple[str, dict]:
-    return normalize_extraction(raw, question=question, crafts=CRAFTS, categories=CATEGORIES)
+    return normalize_extraction(raw, question=question, crafts=CRAFTS)
 
 
 class TestNormalizeExtraction:
@@ -31,15 +30,14 @@ class TestNormalizeExtraction:
                 "craft": "knitting",
                 "difficulty": "beginner",
                 "free": True,
-                "category": "cardigan",
-            }
+            },
+            question="an easy free knitted cardigan",
         )
         assert query == "cable cardigan worsted"
         # Corpus spelling wins over whatever case the model used, because the
         # filter clause compares against the stored column values.
         assert filters == {
             "craft": "Knitting",
-            "category": "Cardigan",
             "difficulty": "beginner",
             "free": True,
         }
@@ -51,13 +49,42 @@ class TestNormalizeExtraction:
         assert query == "cosy shawl"
         assert filters == {}
 
+    def test_craft_the_crafter_never_named_is_dropped(self):
+        _, filters = _extract({"search_query": "oversized sweater", "craft": "Knitting"}, question="a cozy oversized sweater")
+        assert "craft" not in filters
+
+    @pytest.mark.parametrize("question", ["same thing but crocheted", "I crochet", "CROCHET hats"])
+    def test_craft_word_forms_count(self, question):
+        _, filters = _extract({"search_query": "hat", "craft": "crochet"}, question=question)
+        assert filters["craft"] == "Crochet"
+
+    def test_craft_named_earlier_in_the_conversation_counts(self):
+        history = [{"role": "user", "content": "a knitted sweater"}, {"role": "assistant", "content": "Try [1]."}]
+        _, filters = normalize_extraction(
+            {"search_query": "sweater", "craft": "Knitting", "free": True},
+            question="cheaper ones?",
+            crafts=CRAFTS,
+            history=history,
+        )
+        assert filters == {"craft": "Knitting", "free": True}
+
+    def test_craft_named_only_by_the_assistant_does_not_count(self):
+        history = [{"role": "user", "content": "a sweater"}, {"role": "assistant", "content": "[1] is a knitted pullover."}]
+        _, filters = normalize_extraction(
+            {"search_query": "sweater", "craft": "Knitting"}, question="more?", crafts=CRAFTS, history=history
+        )
+        assert "craft" not in filters
+
     def test_unknown_craft_is_dropped(self):
         _, filters = _extract({"search_query": "loom hat", "craft": "weaving"})
         assert "craft" not in filters
 
-    def test_invented_category_is_dropped(self):
-        _, filters = _extract({"search_query": "tea cosy", "category": "Tea Cosy"})
-        assert "category" not in filters
+    def test_category_is_never_a_filter(self):
+        # A wrong category guess hides the right pattern (Hitchhiker is a
+        # Scarf, not a Shawl / Wrap) without ever retrieving zero rows.
+        for category in ("Tea Cosy", "Cardigan", "Other"):
+            _, filters = _extract({"search_query": "x", "category": category})
+            assert "category" not in filters
 
     def test_invalid_difficulty_tier_is_dropped(self):
         _, filters = _extract({"search_query": "sweater", "difficulty": "expert"})
@@ -127,6 +154,10 @@ class TestBuildContext:
         assert "needles/hook US 8" in context
         assert "tags: cable, seamless" in context
 
+    @pytest.mark.parametrize("unrated", ["0", "0.0", 0, None, "", "n/a"])
+    def test_unrated_difficulty_is_left_out(self, unrated):
+        assert "difficulty" not in build_context([_pattern(1, "Bitty Blanket", difficulty=unrated)])
+
     def test_missing_fields_are_omitted_not_blank(self):
         context = build_context(
             [_pattern(1, "Mystery Shawl", designer=None, difficulty=None, description=None, free=None)]
@@ -150,15 +181,15 @@ class TestBuildContext:
 
 class TestPromptMessages:
     def test_extraction_prompt_offers_only_corpus_values(self):
-        messages = build_extraction_messages("a hat", [], crafts=CRAFTS, categories=CATEGORIES)
+        messages = build_extraction_messages("a hat", [], crafts=CRAFTS)
         system = messages[0]["content"]
         assert "Knitting, Crochet" in system
-        assert "Cardigan, Hat, Baby Blanket" in system
+        assert "category" not in system
         assert messages[-1] == {"role": "user", "content": "a hat"}
 
     def test_history_is_trimmed_to_the_recent_turns(self):
         history = [{"role": "user", "content": f"q{i}"} for i in range(HISTORY_TURNS + 4)]
-        messages = build_extraction_messages("now what", history, crafts=CRAFTS, categories=CATEGORIES)
+        messages = build_extraction_messages("now what", history, crafts=CRAFTS)
         # system + trimmed history + the new question
         assert len(messages) == HISTORY_TURNS + 2
         assert messages[1]["content"] == f"q{4}"
@@ -226,7 +257,7 @@ class FakePipeline:
 @pytest.fixture
 def fake_rag(monkeypatch):
     """Patch out the DB-backed helpers so ask() can run without Postgres."""
-    monkeypatch.setattr(conversational, "corpus_filter_values", lambda _db: (CRAFTS, CATEGORIES))
+    monkeypatch.setattr(conversational, "corpus_crafts", lambda _db: CRAFTS)
     monkeypatch.setattr(conversational, "pattern_facts", lambda _db, _ids: {})
 
     def install(llm: FakeLLM, pipeline: FakePipeline):
@@ -246,7 +277,7 @@ class TestAsk:
         pipeline = FakePipeline([_pattern(1, "Harbor Cardigan"), _pattern(2, "Dune Cardigan")])
         fake_rag(llm, pipeline)
 
-        outcome = await conversational.ask(None, "a cabled cardigan I don't have to pay for")
+        outcome = await conversational.ask(None, "a knitted cabled cardigan I don't have to pay for")
 
         assert outcome.answer == "I'd start with [1] — it's free and beginner-friendly."
         assert [p["name"] for p in outcome.patterns] == ["Harbor Cardigan", "Dune Cardigan"]

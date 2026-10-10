@@ -1,0 +1,2 @@
+// Visual cases: one photo per line, stored under evals/images/ (gitignored).
+// {"id": "visual-001", "suite": "visual", "input": {"image": "images/cabled-hat.jpg"}, "expect": {"terms_any": ["hat", "beanie"]}, "tags": ["visual"]}

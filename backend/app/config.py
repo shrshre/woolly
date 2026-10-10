@@ -42,6 +42,19 @@ class Settings(BaseSettings):
     auth_cookie_name: str = "woolly_token"
     cookie_secure: bool = False  # set True behind HTTPS in production
 
+    # Public frontend origin, used in password-reset emails.
+    frontend_url: str = "http://localhost:5173"
+    # SMTP for those emails. Leave smtp_host empty locally — the reset URL is
+    # written to the backend logs instead of being sent.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+    smtp_use_ssl: bool = False
+    password_reset_expires_minutes: int = 60
+
     # API
     cors_origins: str = "http://localhost:5173"
 

@@ -11,6 +11,7 @@ export function Login() {
       altText="New to Woolly?"
       altLinkText="Create an account"
       altLinkTo="/signup"
+      showForgotPassword
     />
   );
 }

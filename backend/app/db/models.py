@@ -25,6 +25,23 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class PasswordResetToken(Base):
+    """One-time token emailed to a user so they can set a new password.
+
+    Only the SHA-256 hash is stored. The raw token lives in the email link
+    and is discarded after use or expiry.
+    """
+
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class SavedPattern(Base):
     """Join table: a user's saved (bookmarked) patterns."""
 
@@ -126,7 +143,14 @@ class SearchEvent(Base):
     )
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     cache_hit: Mapped[bool] = mapped_column(Boolean, server_default="false")
-    search_type: Mapped[str] = mapped_column(Text, server_default="hybrid")  # hybrid / semantic
+    search_type: Mapped[str] = mapped_column(Text, server_default="hybrid")  # hybrid / semantic / rag / visual
+    # Exclusive ms per pipeline stage (embed, retrieve, rerank, extract, answer...);
+    # just {"cache": n} on a cache hit. See app.observability.
+    stage_ms: Mapped[dict] = mapped_column(JSONB, server_default="{}")
+    # Stages that degraded but still served, e.g. ["rerank"] for unranked results.
+    fallbacks: Mapped[list] = mapped_column(JSONB, server_default="[]")
+    # Set when the request failed (retrieval, llm); latency still recorded.
+    error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

@@ -11,7 +11,7 @@ Pattern metadata comes from the [Ravelry API](https://www.ravelry.com/api). Resu
 - **Visual search** — upload a photo of a knit/crochet piece; CLIP finds visually similar patterns
 - **Filters & pagination** — craft, difficulty, free/paid, category; ranked results cached and sliced by page
 - **Recommendations** — homepage picks from a "taste vector" built from your saved patterns and recent searches, with a popularity fallback for new and anonymous visitors
-- **Accounts** — register/login with JWT in an httpOnly cookie; saved pattern library and project tracker
+- **Accounts** — register/login with JWT in an httpOnly cookie; forgot-password email reset; saved pattern library and project tracker
 - **Stitch counter** — voice-assisted counting (Web Speech API)
 - **Colorwork grid maker** — turn an image into a quantized knitting/crochet chart
 - **Background seeding** — incremental Ravelry re-seed every 24 hours, with Redis cache invalidation
@@ -26,7 +26,7 @@ Pattern metadata comes from the [Ravelry API](https://www.ravelry.com/api). Resu
 
 `POST /patterns/ask` is retrieval-augmented generation over the search pipeline — retrieval is unchanged, generation is added on top:
 
-1. **Extraction** — the message (plus recent turns, so "cheaper ones?" works) becomes a clean search query plus `craft` / `difficulty` / `free` / `category` filters. The model may only pick craft and category values that exist in the corpus, and anything it invents is dropped before the filters reach SQL.
+1. **Extraction** — the message (plus recent turns, so "cheaper ones?" works) becomes a clean search query plus `craft` / `difficulty` / `free` filters. The model may only pick crafts that exist in the corpus and that the crafter actually named, and anything it invents is dropped before the filters reach SQL.
 2. **Retrieval** — the same hybrid + cross-encoder pipeline the search bar uses. Filters are soft: if they match nothing, the search is retried without them and the response is flagged `filters_relaxed`.
 3. **Generation** — the top 5 results are packed into a numbered context block (name, designer, craft, category, difficulty, free/paid, yarn weight, needles, tags, truncated description) and the model writes 2–4 sentences citing them as `[1]`, `[2]`. The frontend renders those patterns as numbered cards in the same order.
 
@@ -75,6 +75,8 @@ Fill in at least:
 
 Optional: set `OPENAI_API_KEY` to enable Ask Woolly. Leave it blank and everything else works — the Ask tab simply doesn't appear. `ASK_RATE_LIMIT_PER_HOUR` (default 10) caps asks per account or browser session.
 
+Forgot-password emails need SMTP (`SMTP_HOST`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, plus `FRONTEND_URL` so the reset link points at this app). Leave `SMTP_HOST` blank locally — requesting a reset still works, and the link is printed in the backend logs.
+
 Never commit `.env`.
 
 ### 3. Run the stack
@@ -96,6 +98,12 @@ First backend startup downloads/loads the text embedding and reranker models (CL
 
 ```bash
 docker-compose exec backend python scripts/seed_patterns.py --limit 500
+```
+
+Use `--skip-images` when seeding large batches to avoid loading CLIP during text seed:
+
+```bash
+docker-compose exec backend python scripts/seed_patterns.py --limit 5000 --skip-images
 ```
 
 Safe to re-run: upserts by `ravelry_id`, skips patterns that already have embeddings. For a fuller corpus use a higher `--limit` (default is 5000). Incremental mode (also used by the nightly scheduler):
@@ -126,6 +134,29 @@ curl "http://localhost:8000/patterns/semantic-search?q=cozy%20winter%20sweater"
 curl "http://localhost:8000/patterns/search?q=cardigan"   # Ravelry keyword proxy
 ```
 
+## Deploying to production
+
+Woolly runs in production as **Vercel (frontend) + Railway (backend, Postgres, Redis)**.
+
+| Service | Platform |
+|---|---|
+| React app | Vercel — static build from `frontend/` |
+| FastAPI + ML models | Railway — Docker from `backend/` |
+| PostgreSQL + pgvector | Railway Postgres plugin |
+| Redis | Railway Redis plugin |
+
+Key points:
+
+- **API proxy:** `frontend/vercel.json` rewrites `/api/*` to Railway. Production `client.ts` uses `/api` — do not set `VITE_API_URL` on Vercel.
+- **Auth:** Same-origin `/api` proxy keeps httpOnly cookies working on mobile Safari.
+- **Password reset:** Set `SMTP_HOST` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` and `FRONTEND_URL` (your Vercel origin) on the backend so reset emails can be sent.
+- **Seeding:** Run `seed_patterns.py` and `embed_images.py` against the production Postgres public URL (or a Railway one-off service). Use `--skip-images` during bulk text seed to save RAM.
+- **Scheduler:** Railway backend runs incremental seed every 24h (up to 500 new patterns + 500 image backfills).
+
+Full step-by-step guide: [`docs/15-deployment.md`](docs/15-deployment.md).
+
+Ask Woolly deep dive: [`docs/14-ask-woolly-rag.md`](docs/14-ask-woolly-rag.md).
+
 ## Main API routes
 
 | Area | Endpoints |
@@ -134,10 +165,10 @@ curl "http://localhost:8000/patterns/search?q=cardigan"   # Ravelry keyword prox
 | Ask Woolly | `POST /patterns/ask`, `GET /patterns/ask/capability` |
 | Recommendations | `GET /patterns/recommendations` |
 | Library | `POST/DELETE /patterns/{ravelry_id}/save`, `GET /users/me/library` |
-| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me` |
+| Auth | `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/forgot-password`, `POST /auth/reset-password` |
 | Projects | `GET/POST /projects`, `PATCH/DELETE /projects/{id}` |
-| Admin | `GET /admin/analytics` (requires `X-Admin-Token` when `ADMIN_API_TOKEN` is set) |
-| Health | `GET /health` |
+| Admin | `GET /admin/analytics?days=7` (requires `X-Admin-Token` matching `ADMIN_API_TOKEN`; closed when that's unset) |
+| Health | `GET /health` (503 when Postgres or Redis is down) |
 
 ## Tests
 
@@ -146,6 +177,42 @@ cd backend
 pip install -r requirements.txt
 pytest
 ```
+
+## Evals
+
+Offline quality checks run fixed JSONL cases through the real search, Ask Woolly, and visual-search code and print a scoreboard. Search can also run as vector-only or hybrid-without-rerank to compare stages:
+
+```bash
+docker-compose exec -e GIT_SHA=$(git rev-parse --short HEAD) backend python -m evals.run
+docker-compose exec backend python -m evals.run --suite search --variant vector
+```
+
+On 26 queries with pooled, graded relevance labels (16.5k-pattern corpus):
+
+| | vector only | hybrid, no rerank | hybrid + rerank |
+|---|---|---|---|
+| nDCG@10 | 0.826 | 0.711 | **0.888** |
+| Exact-title MRR | 0.562 | 0.833 | **1.000** |
+| p50 latency | 28 ms | 93 ms | 317 ms |
+
+Ask Woolly is scored per stage on 31 cases, replayed from recorded model responses so no API key is needed:
+
+| Extraction accuracy | Citation validity | Faithfulness (hand-judged) |
+|---|---|---|
+| 0.913 | 1.000 | 0.903 |
+
+The run exits non-zero when a metric drops below its floor in `backend/evals/thresholds.json`. Case format and options: [`backend/evals/README.md`](backend/evals/README.md).
+
+## Observability
+
+Every search, visual search, and Ask request writes one `search_events` row and one JSON log line (`woolly.requests`) with its total latency, exclusive time per stage (`embed`, `retrieve`, `rerank`, `extract`, `answer`...), any fallbacks (a rerank failure serves unranked results; those aren't cached), and an `error` when it failed. `GET /admin/analytics?days=7` turns that into per-surface p50/p95, error and zero-result rates, cache hit, save and click rates, and stage percentiles with the slowest stage named:
+
+| | p50 | p95 | Slowest stage (p95) |
+|---|---|---|---|
+| Search | 319 ms | 373 ms | rerank, 288 ms |
+| Ask | 3.3 s | 4.3 s | extraction, 2.2 s |
+
+Local, uncached. Details: `docs/20-observability.md`.
 
 ## Repository structure
 
@@ -167,6 +234,7 @@ woolly/
 │   ├── scripts/
 │   │   ├── seed_patterns.py
 │   │   └── embed_images.py
+│   ├── evals/             # offline eval harness: JSONL cases, runner, scoring
 │   └── tests/
 └── frontend/
     └── src/

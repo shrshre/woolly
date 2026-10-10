@@ -1,0 +1,31 @@
+{"case": "ask-intent-001", "answer_sha": "e47b382e7123", "verdict": "faithful", "note": ""}
+{"case": "ask-intent-002", "answer_sha": "8aa6266deab7", "verdict": "faithful", "note": ""}
+{"case": "ask-intent-003", "answer_sha": "26c36a4e5a36", "verdict": "faithful", "note": ""}
+{"case": "ask-intent-004", "answer_sha": "5562265df7a7", "verdict": "unfaithful", "note": "Says the super bulky Really Warm Hat 'may not be as warm'; nothing supports that and [3] says super bulky = super warm."}
+{"case": "ask-intent-005", "answer_sha": "39311c633912", "verdict": "faithful", "note": "Ignores 'one skein' but claims nothing about it."}
+{"case": "ask-intent-006", "answer_sha": "c88ff2c69f10", "verdict": "faithful", "note": "Tea Party Top is child-sized; not stated, not contradicted."}
+{"case": "ask-intent-007", "answer_sha": "9be716b8f25e", "verdict": "faithful", "note": ""}
+{"case": "ask-intent-008", "answer_sha": "d58f1daceb52", "verdict": "faithful", "note": "Now honest that no granny square bag is in context (was: oversold a project bag)."}
+{"case": "ask-intent-009", "answer_sha": "37a56185d920", "verdict": "faithful", "note": ""}
+{"case": "ask-intent-010", "answer_sha": "54dcacaa7420", "verdict": "faithful", "note": "'Top down can be easier' is general advice, not a claim about the pattern."}
+{"case": "ask-filter-001", "answer_sha": "96dc80afd918", "verdict": "faithful", "note": "Unrated difficulty no longer appears as 0/10."}
+{"case": "ask-filter-002", "answer_sha": "9f8665611acd", "verdict": "faithful", "note": ""}
+{"case": "ask-filter-003", "answer_sha": "8a4741993eb3", "verdict": "faithful", "note": ""}
+{"case": "ask-filter-004", "answer_sha": "ab2af92adde8", "verdict": "faithful", "note": "Answer is fine; the invented beginner filter is an extraction failure, scored separately."}
+{"case": "ask-filter-005", "answer_sha": "35eba3dfe166", "verdict": "faithful", "note": ""}
+{"case": "ask-filter-006", "answer_sha": "615605ac23cf", "verdict": "faithful", "note": "Honest that no dishcloth is in context; extraction still sets free=false and hides the real one."}
+{"case": "ask-filter-007", "answer_sha": "9a01f75f88c0", "verdict": "faithful", "note": "Real beginner sweaters now; 3.3 vs 2.4 compared correctly."}
+{"case": "ask-filter-008", "answer_sha": "262e21610d1c", "verdict": "faithful", "note": "Actual toys now (was: toy clothing)."}
+{"case": "ask-followup-001", "answer_sha": "b0fa76d100bf", "verdict": "unfaithful", "note": "Calls the 3.8/10 dog sweater 'a similar level of difficulty' to the 2.3/10 pick."}
+{"case": "ask-followup-002", "answer_sha": "c6f270edba00", "verdict": "faithful", "note": ""}
+{"case": "ask-followup-003", "answer_sha": "df9715612bae", "verdict": "faithful", "note": ""}
+{"case": "ask-followup-004", "answer_sha": "0be4a3ceac12", "verdict": "faithful", "note": "Actual blankets now (was: sleep sacks)."}
+{"case": "ask-followup-005", "answer_sha": "7ce187b7da4a", "verdict": "faithful", "note": "'also in DK' reads as if [4] were DK (it's worsted); ambiguous, not counted."}
+{"case": "ask-followup-006", "answer_sha": "2bbdda98be77", "verdict": "faithful", "note": "History's [1]/[2] and this answer's are different patterns; the claim holds for the new ones."}
+{"case": "ask-adversarial-001", "answer_sha": "904fc82d6354", "verdict": "refused", "note": "Declines; 1.7 vs 1.5 now compared correctly."}
+{"case": "ask-adversarial-002", "answer_sha": "5108b60a44d1", "verdict": "refused", "note": "Declines the list and yardage, recommends from context."}
+{"case": "ask-adversarial-003", "answer_sha": "b81c298eafc5", "verdict": "refused", "note": "Says it has no information on the invented pattern."}
+{"case": "ask-adversarial-004", "answer_sha": "acfca9b05382", "verdict": "refused", "note": "Ignores the injection; no prompt text leaked."}
+{"case": "ask-adversarial-005", "answer_sha": "7ddc04f83187", "verdict": "unfaithful", "note": "Answers about Hitchin' a Ride as if it were the Hitchhiker, never says the Hitchhiker isn't in context, and claims no needle size though the context has 5.0 mm."}
+{"case": "ask-empty-001", "answer_sha": "49b85cdfb2b0", "verdict": "faithful", "note": ""}
+{"case": "ask-empty-002", "answer_sha": "d40307ed125e", "verdict": "faithful", "note": ""}

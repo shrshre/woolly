@@ -4,9 +4,12 @@ Two model calls per question:
 
   1. **Extraction** — the message (plus recent turns, so follow-ups like
      "cheaper ones?" work) becomes a clean search query plus optional
-     craft/difficulty/free/category filters. The model may only choose from
-     values that actually exist in the corpus, and anything it invents is
-     dropped in :func:`normalize_extraction`.
+     craft/difficulty/free filters. The model may only choose from values
+     that actually exist in the corpus, and anything it invents is dropped in
+     :func:`normalize_extraction`. Category is deliberately not extracted:
+     Ravelry's categories are too fine-grained to guess (Hitchhiker is a
+     "Scarf", socks are "Mid-calf"), and a wrong guess hides the right pattern
+     without retrieving nothing, so the soft-filter retry never fires.
   2. **Answer** — the reranked top results are packed into a numbered context
      block and the model writes a short recommendation citing them as ``[n]``.
 
@@ -21,6 +24,7 @@ into "here's what's close" instead of a dead end.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +32,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.models import Pattern
+from app.observability import fallback, stage
 from app.search.filters import DIFFICULTY_RANGES
 from app.search.pipeline import search as run_search_pipeline
 from app.services import llm_service
@@ -46,8 +51,6 @@ CONTEXT_DESCRIPTION_CHARS = 400
 CONTEXT_TAG_LIMIT = 6
 # Prior turns replayed into both prompts (user + assistant messages combined).
 HISTORY_TURNS = 6
-# Category choices offered to the extraction model, most common first.
-CATEGORY_CHOICES_LIMIT = 40
 
 NO_RESULTS_ANSWER = (
     "I couldn't find anything in Woolly's pattern library that matches that yet. "
@@ -60,18 +63,22 @@ pattern database.
 
 Reply with JSON only, in this shape:
 {"search_query": string, "craft": string|null, "difficulty": string|null, \
-"free": true|false|null, "category": string|null}
+"free": true|false|null}
 
 Rules:
 - search_query describes what to make: the object, style, technique, yarn \
 weight, or recipient. Keep it short, like a search box query.
 - Do not put filter words in search_query. If you set craft, leave the words \
 knitting/crochet out of it; same for free/paid and difficulty words.
-- Only set a filter the crafter clearly asked for. Prefer null. A gift for a \
-beginner knitter is not necessarily a beginner-difficulty pattern.
-- difficulty must be exactly one of: beginner, intermediate, advanced
-- craft and category must be copied exactly from the allowed values below, or \
-left null. Never invent one.
+- Only set a filter the crafter clearly asked for. Prefer null.
+- craft: set it only when the conversation says knit/knitting/knitted or \
+crochet/crocheted. The object alone (a sweater, amigurumi) does not decide \
+the craft. Copy it exactly from the allowed values below.
+- free: true only when they ask for free patterns; false only when they ask \
+for paid patterns only. "Paid is fine" means null.
+- difficulty: exactly one of beginner, intermediate, advanced, and only when \
+they say how hard the pattern should be or state their own skill level. A \
+gift for someone who is a beginner says nothing about the pattern's difficulty.
 - On a follow-up, carry the earlier subject forward unless the crafter changed \
 it. "Cheaper ones?" after a sweater question still means sweaters, with free \
 set to true.\
@@ -111,15 +118,18 @@ class AskOutcome:
     # Which stage-1 path the pipeline took ("hybrid" or "semantic"), for logs.
     # Ask events themselves are logged under search_type "rag".
     retrieval_type: str = "hybrid"
+    # The CONTEXT block the answer was generated from; offline evals check the
+    # answer's facts against it. Not sent to the client.
+    context: str = ""
 
 
-def corpus_filter_values(db: Session) -> tuple[list[str], list[str]]:
-    """Crafts and categories that exist in the seeded corpus, most common first.
+def corpus_crafts(db: Session) -> list[str]:
+    """Crafts that exist in the seeded corpus, most common first.
 
-    Offering these to the extraction model keeps it from inventing a category
+    Offering these to the extraction model keeps it from inventing a craft
     that would filter every pattern out.
     """
-    crafts = [
+    return [
         row[0]
         for row in db.query(Pattern.craft)
         .filter(Pattern.craft.isnot(None))
@@ -127,16 +137,6 @@ def corpus_filter_values(db: Session) -> tuple[list[str], list[str]]:
         .order_by(func.count().desc())
         .all()
     ]
-    categories = [
-        row[0]
-        for row in db.query(Pattern.category)
-        .filter(Pattern.category.isnot(None))
-        .group_by(Pattern.category)
-        .order_by(func.count().desc())
-        .limit(CATEGORY_CHOICES_LIMIT)
-        .all()
-    ]
-    return crafts, categories
 
 
 def _match_choice(value: Any, choices: list[str]) -> str | None:
@@ -150,18 +150,26 @@ def _match_choice(value: Any, choices: list[str]) -> str | None:
     return None
 
 
+def _craft_mentioned(craft: str, text: str) -> bool:
+    """Whether the crafter named this craft: "knit", "knitted", "crocheted"..."""
+    stem = re.sub(r"(ting|ing)$", "", craft.split()[-1].lower())
+    return re.search(rf"\b{re.escape(stem)}", text.lower()) is not None
+
+
 def normalize_extraction(
     raw: dict[str, Any],
     *,
     question: str,
     crafts: list[str],
-    categories: list[str],
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Validate the extraction model's output into (search_query, filters).
 
-    Nothing from the model is trusted: unknown crafts and categories, invalid
-    difficulty tiers, and non-boolean ``free`` values are dropped rather than
-    passed to the SQL filter builder. An unusable search_query falls back to
+    Nothing from the model is trusted: unknown crafts, invalid difficulty
+    tiers, non-boolean ``free`` values, and any category are dropped rather
+    than passed to the SQL filter builder. A craft is also dropped unless the
+    crafter's own words name it; the model infers Knitting from "sweater"
+    despite the prompt saying not to. An unusable search_query falls back to
     the raw question, so a bad extraction degrades to a plain search.
     """
     query = raw.get("search_query")
@@ -169,13 +177,10 @@ def normalize_extraction(
 
     filters: dict[str, Any] = {}
 
+    said = " ".join([question, *(t["content"] for t in _recent_history(history or []) if t["role"] == "user")])
     craft = _match_choice(raw.get("craft"), crafts)
-    if craft:
+    if craft and _craft_mentioned(craft, said):
         filters["craft"] = craft
-
-    category = _match_choice(raw.get("category"), categories)
-    if category:
-        filters["category"] = category
 
     difficulty = raw.get("difficulty")
     if isinstance(difficulty, str) and difficulty.strip().lower() in DIFFICULTY_RANGES:
@@ -217,6 +222,15 @@ def pattern_facts(db: Session, ravelry_ids: list[int]) -> dict[int, dict[str, An
     return facts
 
 
+def _rated_difficulty(value: Any) -> str | None:
+    """The difficulty as stored, or None when unrated. Ravelry stores "no
+    ratings yet" as 0, and the model reads "0/10" as "very easy"."""
+    try:
+        return str(value) if float(value) > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def build_context(
     patterns: list[dict[str, Any]], facts: dict[int, dict[str, Any]] | None = None
 ) -> str:
@@ -234,8 +248,9 @@ def build_context(
             attributes.append(str(extra["craft"]))
         if extra.get("category"):
             attributes.append(str(extra["category"]))
-        if pattern.get("difficulty"):
-            attributes.append(f"difficulty {pattern['difficulty']}/10")
+        difficulty = _rated_difficulty(pattern.get("difficulty"))
+        if difficulty is not None:
+            attributes.append(f"difficulty {difficulty}/10")
         if pattern.get("free") is not None:
             attributes.append("free" if pattern["free"] else "paid")
         if extra.get("yarn_weight"):
@@ -272,14 +287,12 @@ def build_extraction_messages(
     history: list[dict[str, str]],
     *,
     crafts: list[str],
-    categories: list[str],
 ) -> list[dict[str, str]]:
     # Appended rather than interpolated: the prompt contains a literal JSON
     # example, so it is not a format string.
     system = (
         f"{EXTRACTION_SYSTEM_PROMPT}\n\n"
-        f"Allowed craft values: {', '.join(crafts) or 'none — always use null'}\n"
-        f"Allowed category values: {', '.join(categories) or 'none — always use null'}"
+        f"Allowed craft values: {', '.join(crafts) or 'none — always use null'}"
     )
     return [
         {"role": "system", "content": system},
@@ -319,14 +332,17 @@ async def extract_query(
     A failure here is not fatal: the question is used verbatim with no filters,
     which is exactly what the plain search bar would have done.
     """
-    crafts, categories = corpus_filter_values(db)
-    messages = build_extraction_messages(question, history, crafts=crafts, categories=categories)
+    with stage("ask_db"):
+        crafts = corpus_crafts(db)
+    messages = build_extraction_messages(question, history, crafts=crafts)
     try:
-        raw = await llm_service.complete_json(messages)
+        with stage("extract"):
+            raw = await llm_service.complete_json(messages)
     except LLMUnavailableError:
         logger.warning("Filter extraction failed for %r; searching the question as-is.", question)
+        fallback("extract")
         return question, {}
-    return normalize_extraction(raw, question=question, crafts=crafts, categories=categories)
+    return normalize_extraction(raw, question=question, crafts=crafts, history=history)
 
 
 async def ask(db: Session, question: str, history: list[dict[str, str]] | None = None) -> AskOutcome:
@@ -353,10 +369,13 @@ async def ask(db: Session, question: str, history: list[dict[str, str]] | None =
             retrieval_type=envelope.get("search_type", "hybrid"),
         )
 
-    context = build_context(patterns, pattern_facts(db, [p["id"] for p in patterns]))
-    answer = await llm_service.complete_text(
-        build_answer_messages(question, history, context, filters_relaxed=filters_relaxed)
-    )
+    with stage("ask_db"):
+        facts = pattern_facts(db, [p["id"] for p in patterns])
+    context = build_context(patterns, facts)
+    with stage("answer"):
+        answer = await llm_service.complete_text(
+            build_answer_messages(question, history, context, filters_relaxed=filters_relaxed)
+        )
 
     return AskOutcome(
         answer=answer,
@@ -366,4 +385,5 @@ async def ask(db: Session, question: str, history: list[dict[str, str]] | None =
         filters_relaxed=filters_relaxed,
         top_result_id=envelope.get("top_result_id"),
         retrieval_type=envelope.get("search_type", "hybrid"),
+        context=context,
     )

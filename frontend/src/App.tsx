@@ -3,11 +3,13 @@ import { AuthProvider } from "./auth/AuthContext";
 import { SavedPatternsProvider } from "./auth/SavedPatternsContext";
 import { Nav } from "./components/Nav";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { ForgotPassword } from "./pages/ForgotPassword";
 import { GridMaker } from "./pages/GridMaker";
 import { Home } from "./pages/Home";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Projects } from "./pages/Projects";
+import { ResetPassword } from "./pages/ResetPassword";
 import { SignUp } from "./pages/SignUp";
 import { StitchCounter } from "./pages/StitchCounter";
 
@@ -22,6 +24,8 @@ export default function App() {
           <Route path="/grid-maker" element={<GridMaker />} />
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<SignUp />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route
             path="/library"
             element={
