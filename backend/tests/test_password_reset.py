@@ -46,3 +46,80 @@ class TestResetEmail:
             send_password_reset_email("you@example.com", url, settings)
         assert url in caplog.text
         assert "you@example.com" in caplog.text
+
+
+# Opt in because this exercises real PostgreSQL transaction/row-lock behavior.
+# It creates and drops an isolated schema, never touching application tables.
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException, Response
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import sessionmaker
+
+from app.auth import routes
+from app.config import Settings, get_settings
+from app.db.models import User, PasswordResetToken
+
+
+@pytest.mark.skipif(os.getenv("RUN_POSTGRES_TESTS") != "1", reason="requires PostgreSQL; set RUN_POSTGRES_TESTS=1")
+@pytest.mark.parametrize("same_token", [True, False])
+def test_concurrent_resets_only_one_succeeds(monkeypatch, same_token):
+    engine = create_engine(get_settings().database_url)
+    schema = "reset_test_" + uuid4().hex
+    with engine.begin() as conn:
+        conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    scoped = engine.execution_options(schema_translate_map={None: schema})
+    sessions = sessionmaker(bind=scoped, expire_on_commit=False)
+    barrier = threading.Barrier(2)
+    local = threading.local()
+
+    def synchronize_reads(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT") and "password_reset_tokens" in statement and getattr(local, "active", False) and not getattr(local, "read", False):
+            local.read = True
+            barrier.wait(timeout=10)
+
+    try:
+        User.__table__.create(scoped)
+        PasswordResetToken.__table__.create(scoped)
+        tokens = ["a" * 32, "b" * 32]
+        with sessions() as db:
+            user = User(email="reset@example.com", password_hash="old")
+            db.add(user)
+            db.flush()
+            for raw in tokens:
+                db.add(PasswordResetToken(user_id=user.id, token_hash=hash_reset_token(raw), expires_at=routes._utc_now() + timedelta(minutes=5)))
+            db.commit()
+            user_id = user.id
+        monkeypatch.setattr(routes, "hash_password", lambda password: "hash:" + password)
+        monkeypatch.setattr(routes, "create_access_token", lambda *args: "test-jwt")
+        event.listen(engine, "after_cursor_execute", synchronize_reads)
+
+        def reset(index):
+            local.active = True
+            response = Response()
+            with sessions() as db:
+                try:
+                    routes.reset_password(routes.ResetPasswordRequest(token=tokens[0 if same_token else index], password=f"password-{index}"), response, db, Settings())
+                    return 200, index, response.headers.get("set-cookie")
+                except HTTPException as exc:
+                    return exc.status_code, index, response.headers.get("set-cookie")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(reset, [0, 1]))
+        assert sorted(status for status, _, _ in results) == [200, 400]
+        winner = next(index for status, index, _ in results if status == 200)
+        assert all(bool(cookie) == (status == 200) for status, _, cookie in results)
+        with sessions() as db:
+            assert db.get(User, user_id).password_hash == f"hash:password-{winner}"
+            assert all(token.used_at is not None for token in db.query(PasswordResetToken).all())
+    finally:
+        if event.contains(engine, "after_cursor_execute", synchronize_reads):
+            event.remove(engine, "after_cursor_execute", synchronize_reads)
+        with engine.begin() as conn:
+            conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        engine.dispose()

@@ -142,9 +142,12 @@ def summary_value(summary: dict[str, Any], name: str) -> float | None:
 def check_floors(summary: dict[str, Any], floors: dict[str, float]) -> list[str]:
     """Floors are minimums, except latency keys, which are ceilings."""
     breaches = []
+    if not summary["passed"] + summary["failed"]:
+        breaches.append("no cases were successfully scored")
     for name, limit in floors.items():
         value = summary_value(summary, name)
         if value is None:
+            breaches.append(f"{name} has no measurements")
             continue
         if name.startswith("latency_"):
             if value > limit:

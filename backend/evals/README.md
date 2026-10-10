@@ -72,8 +72,8 @@ purpose, when the dataset or corpus changes.
 
 | Exit code | Meaning |
 |---|---|
-| 0 | Every floor held |
-| 1 | A floor was breached; the scoreboard says which |
+| 0 | Cases were scored and every required metric floor held |
+| 1 | A floor was breached, required measurements were missing, or no cases were scored |
 | 2 | The run couldn't start: bad dataset or judgments, database down, no fixture file to replay, or no API key for `--suite ask --llm record/live` |
 
 Compare two runs only when their dataset hashes match. A changed case file means a new
@@ -124,3 +124,5 @@ Visual photos go in `evals/images/`, which is gitignored.
 ## Tests
 
 The harness has unit tests that need no database: `pytest tests/test_evals.py`.
+
+An explicit suite or filter matching no cases exits 2. An all-suite run permits the shipped empty visual template and skips suites with no filter matches, but the overall selection must contain cases. Runs where every selected case is skipped or errors exit 1, including ablations without floors. Filtered runs must still measure every configured required metric; use a suitable thresholds file when evaluating a narrower subset.

@@ -129,7 +129,7 @@ def forgot_password(
 
     Always returns 204 so callers cannot tell whether the email is registered.
     """
-    user = db.query(User).filter(User.email == body.email.lower()).one_or_none()
+    user = db.query(User).filter(User.email == body.email.lower()).with_for_update().one_or_none()
     if user is None:
         return
 
@@ -175,20 +175,23 @@ def reset_password(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> User:
-    now = _utc_now()
-    reset = (
-        db.query(PasswordResetToken)
-        .filter(PasswordResetToken.token_hash == hash_reset_token(body.token))
-        .one_or_none()
+    token_hash = hash_reset_token(body.token)
+    user_id = (
+        db.query(PasswordResetToken.user_id)
+        .filter(PasswordResetToken.token_hash == token_hash)
+        .scalar()
     )
-    if reset is None or reset.used_at is not None or _as_naive(reset.expires_at) < now:
-        raise HTTPException(
-            status_code=400,
-            detail="This reset link is invalid or has expired. Request a new one.",
-        )
-
-    user = db.get(User, reset.user_id)
-    if user is None:
+    # Lock the account before touching tokens, matching forgot_password's lock
+    # order. This also serializes resets using different tokens for one account.
+    user = db.query(User).filter(User.id == user_id).with_for_update().one_or_none()
+    now = _utc_now()
+    consumed = 0 if user is None else db.query(PasswordResetToken).filter(
+        PasswordResetToken.token_hash == token_hash,
+        PasswordResetToken.used_at.is_(None),
+        PasswordResetToken.expires_at > now,
+    ).update({"used_at": now}, synchronize_session=False)
+    if consumed != 1:
+        db.rollback()
         raise HTTPException(
             status_code=400,
             detail="This reset link is invalid or has expired. Request a new one.",

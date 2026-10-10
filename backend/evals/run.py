@@ -124,6 +124,22 @@ async def run(args: argparse.Namespace) -> int:
             print(f"dataset error: {exc}", file=sys.stderr)
             return EXIT_UNUSABLE
 
+    selected = {suite: select(dataset.cases, args.tag, args.case) for suite, dataset in datasets.items()}
+    for suite in list(suites):
+        if selected[suite]:
+            continue
+        # The shipped visual dataset is an empty template. Filters in an all
+        # run may also select cases from only one of the other suites.
+        if args.suite == "all" and (args.tag or args.case or (suite == "visual" and not datasets[suite].cases)):
+            suites.remove(suite)
+            print(f"Skipping {suite}: no selected cases.")
+        else:
+            print(f"{suite}: no selected cases", file=sys.stderr)
+            return EXIT_UNUSABLE
+    if not suites:
+        print("No cases match the requested selection", file=sys.stderr)
+        return EXIT_UNUSABLE
+
     recorder = judgments = None
     if "ask" in suites:
         reason = ask_unavailable(args.llm, llm_service.is_configured(), FIXTURES_PATH)
@@ -174,10 +190,7 @@ async def run(args: argparse.Namespace) -> int:
 
         reports: list[SuiteReport] = []
         for suite in suites:
-            cases = select(datasets[suite].cases, args.tag, args.case)
-            if not cases:
-                print(f"\n== {suite} == no cases, skipped")
-                continue
+            cases = selected[suite]
             variant = args.variant if suite == "search" else "production"
             target = make_target(suite, db, variant, recorder, judgments)
             target.warm_up()
@@ -214,6 +227,8 @@ async def run(args: argparse.Namespace) -> int:
         )
         print(f"\nSaved {out.relative_to(EVALS_DIR.parent)}")
 
+    if not reports:
+        return EXIT_UNUSABLE
     return EXIT_BREACH if any(r.breaches for r in reports) else EXIT_OK
 
 

@@ -11,7 +11,7 @@ from evals.cases import DatasetError, EvalCase, load_dataset
 from evals.judgments import Judgment, answer_sha, load_judgments
 from evals.llm_fixtures import CompletionRecorder, FixtureMissing, request_key
 from evals.run import DATASETS_DIR, JUDGMENTS_PATH, THRESHOLDS_PATH, ask_unavailable, load_floors, parse_args
-from evals.runner import ERROR, FAIL, PASS, SKIP, check_floors, render, run_cases, summarize, SuiteReport
+from evals.runner import ERROR, FAIL, PASS, SKIP, CaseResult, check_floors, render, run_cases, summarize, SuiteReport
 from evals.scoring import Check, satisfies_filters, score_ask, score_ranked, ungrounded_names, unsupported_numbers
 from evals.targets import Observation
 
@@ -586,12 +586,13 @@ class TestRunner:
 
     def test_floors(self):
         summary = {
+            "passed": 1, "failed": 1,
             "pass_rate": 0.5,
             "metrics": {"ndcg@10": {"mean": 0.8, "n": 3}},
             "latency_ms": {"p50": 100, "p95": 900},
         }
         breaches = check_floors(summary, {"pass_rate": 0.6, "ndcg@10": 0.7, "latency_p95_ms": 500, "mrr": 0.5})
-        assert breaches == ["pass_rate 0.500 < floor 0.6", "latency_p95_ms 900 > ceiling 500"]
+        assert breaches == ["pass_rate 0.500 < floor 0.6", "latency_p95_ms 900 > ceiling 500", "mrr has no measurements"]
 
     @pytest.mark.asyncio
     async def test_render_lists_failures(self):
@@ -652,3 +653,47 @@ class TestPipelineCandidates:
         assert "candidate_ids" not in pipeline.search(self._DB(), "hat")
         monkeypatch.setattr(pipeline, "hybrid_search", lambda *a, **k: ([], "semantic"))
         assert pipeline.search(self._DB(), "hat", include_candidates=True)["candidate_ids"] == []
+
+
+@pytest.mark.parametrize("results", [[], [CaseResult("skip", [], SKIP)]])
+def test_gate_rejects_unscored_runs_even_without_floors(results):
+    assert "no cases were successfully scored" in check_floors(summarize(results), {})
+
+
+def test_required_metric_must_have_measurements():
+    from evals.runner import CaseResult
+    summary = summarize([CaseResult("ok", [], PASS)])
+    assert check_floors(summary, {"ndcg@10": 0.85}) == ["ndcg@10 has no measurements"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suite", ["search", "visual", "all"])
+async def test_empty_filter_is_unusable_before_database_access(suite):
+    from evals.run import run, EXIT_UNUSABLE
+    assert await run(parse_args(["--suite", suite, "--case", "nonexistent-case", "--no-save"])) == EXIT_UNUSABLE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, expected", [(PASS, 0), (SKIP, 1), (ERROR, 1)])
+async def test_all_run_allows_empty_visual_but_requires_scored_cases(monkeypatch, status, expected):
+    from types import SimpleNamespace
+    from app.db import session
+    from evals import run as cli, stamp
+
+    monkeypatch.setattr(cli, "SUITES", ("search", "visual"))
+    monkeypatch.setattr(cli, "load_floors", lambda path: {})
+    db = SimpleNamespace(rollback=lambda: None, close=lambda: None)
+    monkeypatch.setattr(session, "get_sessionmaker", lambda: lambda: db)
+    monkeypatch.setattr(stamp, "corpus_stats", lambda db: {"text_embedded": 1, "image_embedded": 0})
+    monkeypatch.setattr(stamp, "git_revision", lambda: {"sha": "test", "dirty": False})
+    monkeypatch.setattr(stamp, "pipeline_config", lambda: {"rerank_pool": 60})
+    called = []
+    def target(suite, *args):
+        called.append(suite)
+        return SimpleNamespace(warm_up=lambda: None)
+    monkeypatch.setattr(cli, "make_target", target)
+    async def results(*args, **kwargs):
+        return [CaseResult("test", [], status)]
+    monkeypatch.setattr(cli, "run_cases", results)
+    assert await cli.run(cli.parse_args(["--no-save"])) == expected
+    assert called == ["search"]
