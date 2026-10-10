@@ -9,6 +9,8 @@ import logging
 import threading
 from typing import Any
 
+from app.observability import stage
+
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = "all-MiniLM-L6-v2"
@@ -32,7 +34,8 @@ def get_model():
 
 def embed_text(text: str) -> list[float]:
     """Return a 384-dimensional embedding for the given text."""
-    vector = get_model().encode(text, normalize_embeddings=True)
+    with stage("embed"):
+        vector = get_model().encode(text, normalize_embeddings=True)
     return vector.tolist()
 
 

@@ -12,9 +12,9 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app import observability
 from app.auth.dependencies import get_current_user, get_current_user_optional
 from app.cache.redis_client import (
     ask_cache_key,
@@ -30,9 +30,11 @@ from app.cache.redis_client import (
 from app.config import Settings, get_settings
 from app.db.models import Pattern, ResultInteraction, SavedPattern, SearchEvent, User
 from app.db.session import get_db, get_sessionmaker
+from app.observability import stage
 from app.search import conversational
 from app.search import recommendations as recommendations_service
 from app.search.pipeline import search as run_search_pipeline
+from app.search.visual_search import nearest_patterns
 from app.services import clip_service, llm_service, reranking_service
 from app.services.ravelry_client import (
     PatternProvider,
@@ -103,6 +105,11 @@ class SemanticSearchResult(PatternSearchResult):
     search_event_id: int | None = None
 
 
+def _elapsed_ms(started: float) -> int:
+    """Wall time since ``started``; a sub-millisecond request records as 1, never 0."""
+    return max(1, round((time.perf_counter() - started) * 1000))
+
+
 def _log_search_event(
     db: Session,
     *,
@@ -115,6 +122,7 @@ def _log_search_event(
     latency_ms: int,
     cache_hit: bool,
     search_type: str,
+    error: str | None = None,
 ) -> int | None:
     """Write one search_events row synchronously and return its id.
 
@@ -124,8 +132,26 @@ def _log_search_event(
     waiting on this request's open transaction, wedging the request forever
     (observed live with init_db's ALTER TABLE during a seed run). Any failure
     is logged and swallowed so analytics never 500s the search.
+
+    The request's stage timings and fallbacks come from its trace. The
+    structured log line is written first, so a request that fails because the
+    database is down still leaves a record.
     """
+    trace = observability.current()
+    stage_ms = trace.stage_ms() if trace else {}
+    fallbacks = list(trace.fallbacks) if trace else []
+    observability.log_request(
+        search_type=search_type,
+        latency_ms=latency_ms,
+        cache_hit=cache_hit,
+        result_count=result_count,
+        stage_ms=stage_ms,
+        fallbacks=fallbacks,
+        error=error,
+    )
     try:
+        if error:
+            db.rollback()  # the failure may have left the transaction aborted
         event = SearchEvent(
             session_id=session_id,
             user_id=user_id,
@@ -136,6 +162,9 @@ def _log_search_event(
             latency_ms=latency_ms,
             cache_hit=cache_hit,
             search_type=search_type,
+            stage_ms=stage_ms,
+            fallbacks=fallbacks,
+            error=error,
         )
         db.add(event)
         db.commit()
@@ -171,9 +200,15 @@ async def semantic_search_patterns(
     # facts (top_result_id, search_type) are computed once and cached per
     # query+filters as an envelope; pages are sliced from it, so "load more" is
     # a cache hit with no recompute. total reflects the full result count.
+    filters = {
+        k: v
+        for k, v in {"craft": craft, "difficulty": difficulty, "free": free, "category": category}.items()
+        if v is not None
+    }
     cache_key = semantic_cache_key(query, craft=craft, difficulty=difficulty, free=free, category=category)
     started = time.perf_counter()
-    cached = await get_cached(cache_key)
+    with stage("cache"):
+        cached = await get_cached(cache_key)
     cache_hit = cached is not None
 
     if cache_hit:
@@ -183,7 +218,7 @@ async def semantic_search_patterns(
             envelope = {"results": envelope, "top_result_id": None, "search_type": "hybrid"}
         # cache-hit latency is the (tiny) cost of fetching from Redis; a
         # sub-millisecond hit still records as 1ms, never a misleading 0.
-        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+        latency_ms = _elapsed_ms(started)
     else:
         try:
             envelope = run_search_pipeline(
@@ -191,6 +226,19 @@ async def semantic_search_patterns(
             )
         except Exception as exc:  # DB down, patterns table missing, etc.
             logger.error("Semantic search failed: %s", exc)
+            _log_search_event(
+                db,
+                session_id=session_id,
+                user_id=user.id if user else None,
+                query=query,
+                filters=filters,
+                result_count=0,
+                top_result_id=None,
+                latency_ms=_elapsed_ms(started),
+                cache_hit=False,
+                search_type="hybrid",
+                error="retrieval",
+            )
             raise HTTPException(
                 status_code=503,
                 detail="Semantic search is unavailable. Has the database been seeded?",
@@ -202,17 +250,15 @@ async def semantic_search_patterns(
                 detail="No embedded patterns found. Run scripts/seed_patterns.py first.",
             )
 
-        latency_ms = envelope["latency_ms"]
-        await set_cached(cache_key, json.dumps(envelope), settings.semantic_cache_ttl_seconds)
+        latency_ms = _elapsed_ms(started)
+        # A degraded list (e.g. unranked after a rerank failure) is served but
+        # not cached, or it would outlive the failure by the whole TTL.
+        if not observability.degraded():
+            await set_cached(cache_key, json.dumps(envelope), settings.semantic_cache_ttl_seconds)
 
     results = envelope["results"]
     page = results[offset : offset + limit]
 
-    filters = {
-        k: v
-        for k, v in {"craft": craft, "difficulty": difficulty, "free": free, "category": category}.items()
-        if v is not None
-    }
     search_event_id = _log_search_event(
         db,
         session_id=session_id,
@@ -260,26 +306,32 @@ async def visual_search_patterns(
         raise HTTPException(status_code=413, detail="Image too large (max 10MB).")
 
     started = time.perf_counter()
+    session_id = session_id or str(uuid.uuid4())
     try:
-        query_vector = clip_service.embed_image_bytes(data)
+        with stage("embed_image"):
+            query_vector = clip_service.embed_image_bytes(data)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    vector_literal = "[" + ",".join(str(v) for v in query_vector) + "]"
-    rows = db.execute(
-        text(
-            """
-            SELECT ravelry_id, name, designer, description, difficulty,
-                   ravelry_url, image_url, is_free, id AS internal_id,
-                   1 - (image_embedding <=> CAST(:vec AS vector)) AS similarity
-            FROM patterns
-            WHERE image_embedding IS NOT NULL
-            ORDER BY image_embedding <=> CAST(:vec AS vector)
-            LIMIT :limit
-            """
-        ),
-        {"vec": vector_literal, "limit": limit},
-    ).mappings().all()
+    try:
+        with stage("retrieve"):
+            rows = nearest_patterns(db, query_vector, limit)
+    except Exception as exc:
+        logger.exception("Visual search retrieval failed.")
+        _log_search_event(
+            db,
+            session_id=session_id,
+            user_id=user.id if user else None,
+            query=VISUAL_SEARCH_QUERY_LABEL,
+            filters={},
+            result_count=0,
+            top_result_id=None,
+            latency_ms=_elapsed_ms(started),
+            cache_hit=False,
+            search_type="visual",
+            error="retrieval",
+        )
+        raise HTTPException(status_code=503, detail="Visual search is unavailable.") from exc
 
     if not rows:
         raise HTTPException(
@@ -287,7 +339,7 @@ async def visual_search_patterns(
             detail="No image-embedded patterns yet. Run scripts/embed_images.py first.",
         )
 
-    latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+    latency_ms = _elapsed_ms(started)
     patterns = []
     for row in rows:
         similarity = round(float(row["similarity"]), 4)
@@ -312,7 +364,7 @@ async def visual_search_patterns(
 
     search_event_id = _log_search_event(
         db,
-        session_id=session_id or str(uuid.uuid4()),
+        session_id=session_id,
         user_id=user.id if user else None,
         query=VISUAL_SEARCH_QUERY_LABEL,
         filters={},
@@ -397,12 +449,28 @@ async def ask_patterns(
 
     cache_key = ask_cache_key(question, [f"{t['role']}:{t['content']}" for t in history])
     started = time.perf_counter()
-    cached = await get_cached(cache_key)
+    with stage("cache"):
+        cached = await get_cached(cache_key)
     cache_hit = cached is not None
+
+    def log_failure(error: str) -> None:
+        _log_search_event(
+            db,
+            session_id=session_id,
+            user_id=user.id if user else None,
+            query=question,
+            filters={},
+            result_count=0,
+            top_result_id=None,
+            latency_ms=_elapsed_ms(started),
+            cache_hit=False,
+            search_type="rag",
+            error=error,
+        )
 
     if cache_hit:
         envelope = json.loads(cached)
-        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
+        latency_ms = _elapsed_ms(started)
     else:
         # Only a miss costs a model call, so only a miss counts against quota.
         identity = f"user:{user.id}" if user else f"session:{session_id}"
@@ -422,12 +490,14 @@ async def ask_patterns(
             outcome = await conversational.ask(db, question, history)
         except llm_service.LLMUnavailableError as exc:
             logger.warning("Ask failed for %r: %s", question, exc)
+            log_failure("llm")
             raise HTTPException(
                 status_code=503,
                 detail="The assistant is unavailable right now. Please try again in a moment.",
             ) from exc
         except Exception as exc:  # DB down, patterns table missing, etc.
             logger.exception("Ask retrieval failed for %r.", question)
+            log_failure("retrieval")
             raise HTTPException(
                 status_code=503,
                 detail="Search is unavailable. Has the database been seeded?",
@@ -441,8 +511,10 @@ async def ask_patterns(
             "filters_relaxed": outcome.filters_relaxed,
             "top_result_id": outcome.top_result_id,
         }
-        latency_ms = max(1, round((time.perf_counter() - started) * 1000))
-        await set_cached(cache_key, json.dumps(envelope), settings.ask_cache_ttl_seconds)
+        latency_ms = _elapsed_ms(started)
+        # Degraded answers (extraction fell back, results unranked) aren't cached.
+        if not observability.degraded():
+            await set_cached(cache_key, json.dumps(envelope), settings.ask_cache_ttl_seconds)
 
     search_event_id = _log_search_event(
         db,

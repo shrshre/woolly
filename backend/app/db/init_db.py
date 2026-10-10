@@ -89,6 +89,18 @@ def init_db() -> None:
         conn.execute(
             text("ALTER TABLE patterns ADD COLUMN IF NOT EXISTS image_embedding vector(512)")
         )
+        # Request observability (app/observability.py)
+        conn.execute(
+            text(
+                "ALTER TABLE search_events "
+                "ADD COLUMN IF NOT EXISTS stage_ms JSONB NOT NULL DEFAULT '{}', "
+                "ADD COLUMN IF NOT EXISTS fallbacks JSONB NOT NULL DEFAULT '[]', "
+                "ADD COLUMN IF NOT EXISTS error TEXT"
+            )
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS search_events_created_at_idx ON search_events (created_at)")
+        )
         conn.commit()
 
     logger.info("Database initialized: pgvector enabled, tables and index created.")

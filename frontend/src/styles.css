@@ -1081,10 +1081,33 @@ body {
   margin: 0 0 12px;
 }
 
+.auth-forgot {
+  text-align: right;
+  margin: -8px 0 16px;
+  font-size: 13px;
+}
+
+.auth-forgot a {
+  color: #800020;
+}
+
+.auth-message {
+  font-size: 15px;
+  color: #6b4c3b;
+  line-height: 1.5;
+  margin: 0 0 20px;
+  text-align: center;
+}
+
 .auth-submit {
   width: 100%;
   height: 42px;
   font-size: 15px;
+}
+
+.auth-submit:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }
 
 .auth-alt {
@@ -1480,6 +1503,7 @@ body {
 
 .grid-canvas {
   max-width: 100%;
+  height: auto;
   cursor: crosshair;
   touch-action: none;
 }
@@ -1600,6 +1624,9 @@ body {
 
 .grid-tools {
   margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .tool-active {

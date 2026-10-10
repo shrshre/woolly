@@ -184,6 +184,22 @@ export function logout(): Promise<void> {
   return request("/auth/logout", { method: "POST" });
 }
 
+export function requestPasswordReset(email: string): Promise<void> {
+  return request("/auth/forgot-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(token: string, password: string): Promise<User> {
+  return request("/auth/reset-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+  });
+}
+
 export async function fetchCurrentUser(): Promise<User | null> {
   try {
     return await request<User>("/auth/me");

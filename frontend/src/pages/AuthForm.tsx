@@ -9,9 +9,18 @@ interface AuthFormProps {
   altText: string;
   altLinkText: string;
   altLinkTo: string;
+  showForgotPassword?: boolean;
 }
 
-export function AuthForm({ title, submitLabel, onSubmit, altText, altLinkText, altLinkTo }: AuthFormProps) {
+export function AuthForm({
+  title,
+  submitLabel,
+  onSubmit,
+  altText,
+  altLinkText,
+  altLinkTo,
+  showForgotPassword = false,
+}: AuthFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +72,11 @@ export function AuthForm({ title, submitLabel, onSubmit, altText, altLinkText, a
             minLength={8}
             required
           />
+          {showForgotPassword && (
+            <p className="auth-forgot">
+              <Link to="/forgot-password">Forgot your password?</Link>
+            </p>
+          )}
           {error && (
             <p className="auth-error" role="alert">
               {error}

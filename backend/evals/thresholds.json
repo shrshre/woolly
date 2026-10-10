@@ -1,0 +1,23 @@
+{
+  "search": {
+    "pass_rate": 0.9,
+    "ndcg@10": 0.85,
+    "mrr": 0.85,
+    "recall@10": 0.53,
+    "candidate_recall@60": 0.9,
+    "title_mrr": 0.9,
+    "designer_share@10": 0.9,
+    "filter_precision@10": 1.0
+  },
+  "ask": {
+    "pass_rate": 0.8,
+    "citation_validity": 1.0,
+    "extraction_accuracy": 0.85,
+    "faithfulness": 0.85,
+    "auto_grounded": 1.0,
+    "judged": 1.0
+  },
+  "visual": {
+    "pass_rate": 0.5
+  }
+}
