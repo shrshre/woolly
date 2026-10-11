@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { logInteraction, type PatternSummary } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -53,7 +53,15 @@ export function PatternCard({
 
   return (
     <article className="card">
-      <div className="card-image">
+      <div
+        className="card-image"
+        // Lets CSS paint a blurred copy of the photo behind it (desktop home grid).
+        style={
+          pattern.photo_url
+            ? ({ "--card-img": `url("${pattern.photo_url.replace(/"/g, "%22")}")` } as CSSProperties)
+            : undefined
+        }
+      >
         {pattern.photo_url ? (
           <img src={pattern.photo_url} alt={pattern.name} loading="lazy" />
         ) : (

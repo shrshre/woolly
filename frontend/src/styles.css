@@ -1841,3 +1841,252 @@ body {
 .footer a:hover {
   text-decoration: underline;
 }
+
+/* ---------- Filters popover ---------- */
+
+.filter-bar {
+  position: relative;
+}
+
+.filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  background: #ffffff;
+  border: 1px solid #e8e0d5;
+  border-radius: 9999px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  color: #6b4c3b;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.filter-trigger i {
+  font-size: 15px;
+}
+
+.filter-trigger:hover {
+  border-color: #c9a800;
+}
+
+.filter-trigger:focus-visible,
+.filter-panel .filter-select:focus-visible,
+.filter-done:focus-visible {
+  outline: 2px solid #800020;
+  outline-offset: 2px;
+}
+
+.filter-trigger.has-active {
+  border-color: #800020;
+  background: #fbe8ec;
+  color: #800020;
+  font-weight: 500;
+}
+
+.filter-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #800020;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #ffffff;
+}
+
+.filter-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: min(340px, calc(100vw - 2rem));
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #e8e0d5;
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(128, 0, 32, 0.12);
+}
+
+.filter-field {
+  display: grid;
+  gap: 4px;
+}
+
+.filter-label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #9e7b6a;
+}
+
+.filter-panel .filter-select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  height: 38px;
+  padding: 0 34px 0 14px;
+  font-size: 14px;
+  background: #ffffff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none' stroke='%236b4c3b' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E")
+    no-repeat right 13px center / 12px;
+  border-radius: 10px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.filter-panel .filter-select.is-active {
+  border-color: #800020;
+  background-color: #fbe8ec;
+  color: #800020;
+  font-weight: 500;
+}
+
+.filter-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.filter-panel .filter-clear {
+  font-size: 13px;
+}
+
+.filter-done {
+  height: 34px;
+  padding: 0 18px;
+  background: #800020;
+  border: none;
+  border-radius: 9999px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.filter-done:hover {
+  background: #6a001b;
+}
+
+/* ---------- Home photo search tab ---------- */
+
+.photo-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 560px;
+  padding: 28px 20px;
+  background: #ffffff;
+  border: 1.5px dashed #c9a8a0;
+  border-radius: 14px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  color: #6b4c3b;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.photo-drop:hover:not(:disabled),
+.photo-drop.is-dragging {
+  border-color: #800020;
+  background: #fbf3f5;
+}
+
+.photo-drop:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.photo-drop-icon {
+  font-size: 28px;
+  color: #800020;
+}
+
+.photo-drop-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: #2c1810;
+}
+
+.photo-drop-hint {
+  font-size: 12px;
+  color: #9e7b6a;
+}
+
+/* ---------- Home two-column (desktop) ---------- */
+/* Default: plain block, same as the pre-wrapper single column. Everything
+   below lives inside min-width: 1024px and is scoped to .home-layout, so
+   <=1023px and other pages are untouched. Search controls sit at the top;
+   only the results are laid out in two columns. */
+
+.home-layout {
+  display: block;
+}
+
+/* Home results + recommendations on desktop: the standard side-photo card,
+   just arranged in two equal columns. Rows share the tallest card's height so
+   every card is the same size. Below 1024px the lists are untouched. */
+@media (min-width: 1024px) {
+  .home-layout :is(.results-list, .recs-list) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 1fr;
+    gap: 1rem;
+  }
+
+  .home-layout :is(.results-list, .recs-list) > li {
+    display: flex;
+    min-width: 0;
+  }
+
+  .home-layout :is(.results-list, .recs-list) :is(.card, .skeleton-card) {
+    width: 100%;
+  }
+
+  /* Narrower than the one-column card: wrap instead of clipping the footer */
+  .home-layout :is(.results-list, .recs-list) .card-footer {
+    flex-wrap: wrap;
+  }
+}
+
+@media (min-width: 1024px) {
+  .home-layout {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 2rem;
+  }
+
+  .home-layout .hero {
+    padding: 3rem 0 2rem;
+  }
+
+  .home-layout .hero-title {
+    max-width: 760px;
+  }
+
+  .home-layout .search-bar {
+    max-width: 640px;
+  }
+
+  /* Results / recommendations fill the full width */
+  .home-layout .results,
+  .home-layout .recs {
+    max-width: none;
+    margin: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+}

@@ -32,8 +32,9 @@ export function Home() {
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   // Search bar vs conversational assistant. The Ask tab only appears when the
   // server has an LLM configured.
-  const [tab, setTab] = useState<"search" | "ask">("search");
+  const [tab, setTab] = useState<"search" | "ask" | "photo">("search");
   const [askAvailable, setAskAvailable] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const resultsRef = useRef<HTMLElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -125,6 +126,35 @@ export function Home() {
     if (file) void runVisualSearch(file);
   }
 
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && /^image\/(jpeg|png|webp)$/.test(file.type)) void runVisualSearch(file);
+  }
+
+  // Text and photo searches share one result set, so entering the other
+  // search tab starts clean instead of showing the wrong kind of results.
+  function selectTab(next: "search" | "ask" | "photo") {
+    if (next === tab) return;
+    if ((next === "photo" && mode === "text") || (next === "search" && mode === "visual")) {
+      setPatterns([]);
+      setTotal(0);
+      setSearchEventId(null);
+      setActiveQuery(null);
+      setError(null);
+      setPage(1);
+      setMode("text");
+      setUploadPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    }
+    setTab(next);
+  }
+
+  const showResults = (tab === "search" && mode === "text") || (tab === "photo" && mode === "visual");
+
   function handleFilters(next: SearchFilters) {
     setFilters(next);
     // Re-run the current search from page one with the new filters, if there is one
@@ -175,40 +205,55 @@ export function Home() {
   }
 
   return (
-    <>
+    <div className="home-layout">
       <header className="hero">
         <p className="hero-eyebrow">
-          {tab === "ask" ? "Ask Woolly" : "Semantic pattern search"}
+          {tab === "ask"
+            ? "Ask Woolly"
+            : tab === "photo"
+              ? "Search by photo"
+              : "Semantic pattern search"}
         </p>
         <h1 className="hero-title">Find the pattern you're imagining</h1>
         <p className="hero-subtitle">
           {tab === "ask"
             ? "Describe your project, your yarn, or who it's for — Woolly picks patterns from its library and explains why they fit."
-            : "Describe what you want to make in your own words — Woolly understands intent, not just keywords."}
+            : tab === "photo"
+              ? "Upload a photo of a finished piece — Woolly finds patterns that look like it."
+              : "Describe what you want to make in your own words — Woolly understands intent, not just keywords."}
         </p>
 
-        {askAvailable && (
-          <div className="mode-toggle" role="tablist" aria-label="How to find patterns">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === "search"}
-              className={tab === "search" ? "mode-tab active" : "mode-tab"}
-              onClick={() => setTab("search")}
-            >
-              <i className="ti ti-search" aria-hidden="true"></i> Search
-            </button>
+        <div className="mode-toggle" role="tablist" aria-label="How to find patterns">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "search"}
+            className={tab === "search" ? "mode-tab active" : "mode-tab"}
+            onClick={() => selectTab("search")}
+          >
+            <i className="ti ti-search" aria-hidden="true"></i> Search
+          </button>
+          {askAvailable && (
             <button
               type="button"
               role="tab"
               aria-selected={tab === "ask"}
               className={tab === "ask" ? "mode-tab active" : "mode-tab"}
-              onClick={() => setTab("ask")}
+              onClick={() => selectTab("ask")}
             >
               <i className="ti ti-message-circle" aria-hidden="true"></i> Ask Woolly
             </button>
-          </div>
-        )}
+          )}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "photo"}
+            className={tab === "photo" ? "mode-tab active" : "mode-tab"}
+            onClick={() => selectTab("photo")}
+          >
+            <i className="ti ti-camera" aria-hidden="true"></i> Photo
+          </button>
+        </div>
 
         {tab === "search" && (
           <>
@@ -218,147 +263,162 @@ export function Home() {
               onSubmit={() => void runSearch(query)}
               disabled={loading}
             />
-            <div className="photo-search">
-              <button
-                type="button"
-                className="chip chip-photo"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={loading}
-              >
-                <i className="ti ti-camera" aria-hidden="true"></i> Search by photo
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                onChange={handleFileChange}
-                hidden
-              />
-            </div>
             <FilterBar filters={filters} onChange={handleFilters} />
+          </>
+        )}
+
+        {tab === "photo" && (
+          <>
+            <button
+              type="button"
+              className={dragging ? "photo-drop is-dragging" : "photo-drop"}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={handleDrop}
+              disabled={loading}
+            >
+              <i className="ti ti-camera photo-drop-icon" aria-hidden="true"></i>
+              <span className="photo-drop-title">
+                {mode === "visual" ? "Try another photo" : "Drop a photo here, or click to upload"}
+              </span>
+              <span className="photo-drop-hint">JPG, PNG or WebP</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={handleFileChange}
+              hidden
+            />
           </>
         )}
       </header>
 
-      {tab === "ask" && <AskPanel />}
+      <div className="home-main">
+        {tab === "ask" && <AskPanel />}
 
-      {tab === "search" && !loading && !error && !activeQuery && <RecommendedPatterns />}
+        {tab === "search" && !loading && !error && !activeQuery && <RecommendedPatterns />}
 
-      <section className="results" ref={resultsRef} hidden={tab !== "search"}>
-        {loading && (
-          <ul className="results-list">
-            {[0, 1, 2].map((i) => (
-              <li key={i}>
-                <SkeletonCard />
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {!loading && error && (
-          <p className="results-error" role="alert">
-            {error}
-          </p>
-        )}
-
-        {!loading && !error && activeQuery && total === 0 && (
-          <div className="results-empty">
-            <p className="results-label">No patterns found for “{activeQuery}”</p>
-            {(() => {
-              const suggestions = emptyStateSuggestions();
-              if (suggestions.length === 0) {
-                return (
-                  <p className="results-empty-hint">
-                    Try describing your project a little differently, or check your spelling.
-                  </p>
-                );
-              }
-              return (
-                <>
-                  <p className="results-empty-hint">Try a broader search:</p>
-                  <div className="chips">
-                    {suggestions.map((s) => (
-                      <button key={s.label} type="button" className="chip" onClick={s.run}>
-                        {s.label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        )}
-
-        {!loading && !error && activeQuery && total > 0 && (
-          <>
-            {mode === "visual" ? (
-              <div className="results-label results-label-visual">
-                {uploadPreview && <img src={uploadPreview} alt="Your uploaded photo" className="upload-preview" />}
-                <span>
-                  {total} {total === 1 ? "pattern" : "patterns"} similar to your photo
-                </span>
-              </div>
-            ) : (
-              <p className="results-label">
-                {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
-                {total < 10 &&
-                  Object.values(filters).some((v) => v !== undefined && v !== "") && (
-                    <span className="results-filter-hint">
-                      {" "}
-                      — only {total} {total === 1 ? "pattern matches" : "patterns match"} these
-                      filters
-                    </span>
-                  )}
-              </p>
-            )}
-            <ul className={paging ? "results-list is-paging" : "results-list"}>
-              {patterns.map((p, i) => (
-                <li key={p.id}>
-                  <PatternCard
-                    pattern={p}
-                    searchEventId={searchEventId}
-                    position={(page - 1) * PAGE_SIZE + i + 1}
-                  />
+        <section className="results" ref={resultsRef} hidden={!showResults}>
+          {loading && (
+            <ul className="results-list">
+              {[0, 1, 2].map((i) => (
+                <li key={i}>
+                  <SkeletonCard />
                 </li>
               ))}
             </ul>
-            {mode === "text" && totalPages > 1 && (
-              <nav className="pagination" aria-label="Search result pages">
-                <button
-                  type="button"
-                  className="page-arrow"
-                  onClick={() => void goToPage(page - 1)}
-                  disabled={paging || page === 1}
-                  aria-label="Previous page"
-                >
-                  <i className="ti ti-chevron-left" aria-hidden="true"></i>
-                </button>
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
-                  <button
-                    key={n}
-                    type="button"
-                    className={n === page ? "page-num active" : "page-num"}
-                    onClick={() => void goToPage(n)}
-                    disabled={paging}
-                    aria-current={n === page ? "page" : undefined}
-                  >
-                    {n}
-                  </button>
+          )}
+
+          {!loading && error && (
+            <p className="results-error" role="alert">
+              {error}
+            </p>
+          )}
+
+          {!loading && !error && activeQuery && total === 0 && (
+            <div className="results-empty">
+              <p className="results-label">No patterns found for “{activeQuery}”</p>
+              {(() => {
+                const suggestions = emptyStateSuggestions();
+                if (suggestions.length === 0) {
+                  return (
+                    <p className="results-empty-hint">
+                      Try describing your project a little differently, or check your spelling.
+                    </p>
+                  );
+                }
+                return (
+                  <>
+                    <p className="results-empty-hint">Try a broader search:</p>
+                    <div className="chips">
+                      {suggestions.map((s) => (
+                        <button key={s.label} type="button" className="chip" onClick={s.run}>
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          {!loading && !error && activeQuery && total > 0 && (
+            <>
+              {mode === "visual" ? (
+                <div className="results-label results-label-visual">
+                  {uploadPreview && <img src={uploadPreview} alt="Your uploaded photo" className="upload-preview" />}
+                  <span>
+                    {total} {total === 1 ? "pattern" : "patterns"} similar to your photo
+                  </span>
+                </div>
+              ) : (
+                <p className="results-label">
+                  {total} {total === 1 ? "result" : "results"} for “{activeQuery}”
+                  {total < 10 &&
+                    Object.values(filters).some((v) => v !== undefined && v !== "") && (
+                      <span className="results-filter-hint">
+                        {" "}
+                        — only {total} {total === 1 ? "pattern matches" : "patterns match"} these
+                        filters
+                      </span>
+                    )}
+                </p>
+              )}
+              <ul className={paging ? "results-list is-paging" : "results-list"}>
+                {patterns.map((p, i) => (
+                  <li key={p.id}>
+                    <PatternCard
+                      pattern={p}
+                      searchEventId={searchEventId}
+                      position={(page - 1) * PAGE_SIZE + i + 1}
+                    />
+                  </li>
                 ))}
-                <button
-                  type="button"
-                  className="page-arrow"
-                  onClick={() => void goToPage(page + 1)}
-                  disabled={paging || page === totalPages}
-                  aria-label="Next page"
-                >
-                  <i className="ti ti-chevron-right" aria-hidden="true"></i>
-                </button>
-              </nav>
-            )}
-          </>
-        )}
-      </section>
-    </>
+              </ul>
+              {mode === "text" && totalPages > 1 && (
+                <nav className="pagination" aria-label="Search result pages">
+                  <button
+                    type="button"
+                    className="page-arrow"
+                    onClick={() => void goToPage(page - 1)}
+                    disabled={paging || page === 1}
+                    aria-label="Previous page"
+                  >
+                    <i className="ti ti-chevron-left" aria-hidden="true"></i>
+                  </button>
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      className={n === page ? "page-num active" : "page-num"}
+                      onClick={() => void goToPage(n)}
+                      disabled={paging}
+                      aria-current={n === page ? "page" : undefined}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="page-arrow"
+                    onClick={() => void goToPage(page + 1)}
+                    disabled={paging || page === totalPages}
+                    aria-label="Next page"
+                  >
+                    <i className="ti ti-chevron-right" aria-hidden="true"></i>
+                  </button>
+                </nav>
+              )}
+            </>
+          )}
+        </section>
+      </div>
+    </div>
   );
 }

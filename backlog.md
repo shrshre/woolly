@@ -2,46 +2,62 @@
 
 ## Bugs
 
+### Search
+
 - [ ] **Bookmark icon does not show up**
-- [ ] **Search: "hat to match my mittens" returns mittens.** The top 3 are mitten patterns, with cross-encoder scores above 0.99. The reranker rewards the word "mittens" and misses that the wanted object is a hat. Found by `search-negative-002`. Now labeled: nDCG@10 0.60, and real hat-and-mitten sets sit at ranks 4–5. Fix in the iterate phase against that score.
-- [ ] **Ask: extraction still invents `difficulty` and `free` filters.** "A gift for my friend who just learned to knit" becomes `difficulty: beginner` (the friend's skill, not the pattern's), and "an advanced crochet dishcloth, paid is fine" becomes `free: false`, which hides the one real crochet dishcloth. Explicit prompt rules against both had no effect on `gpt-4o-mini`. Found by `ask-filter-004` and `ask-filter-006`. Craft had the same problem and is now guarded in code (dropped unless the crafter's own words say knit or crochet); these two need a similar check, or soft filters for difficulty and free.
-- [ ] **Ask: the answer model gets numeric comparisons wrong.** It called a 3.8/10 pattern "a similar level of difficulty" to a 2.3/10 one (`ask-followup-001`), and an earlier recording called 1.7/10 "slightly easier" than 1.5/10. It also claimed a super-bulky hat "may not be as warm," against the context (`ask-intent-004`). Ideas to measure: tell the answer prompt that a lower rating is easier and to state both numbers instead of characterizing the gap, or sort the context so comparisons are by position.
-- [ ] **Ask: a named pattern that isn't retrieved gets silently swapped.** Asked about the Hitchhiker, the answer discusses "Hitchin' a Ride" (a crochet tribute) as if it were the one asked about, and says it has no needle size though the context shows 5.0 mm (`ask-adversarial-005`). The answer prompt needs a rule: if the user names a pattern and it isn't in the context, say so first.
-- [ ] **Ask: the Hitchhiker only reaches rank 5 for its own name.** Retrieval returns "Hitchin' a Ride" first and the real Hitchhiker isn't in the corpus at all; only "Hitchhiker Beyond" is (rank 5). Title queries for famous patterns depend on what was seeded; see the corpus coverage item.
-- [ ] **Ask: follow-up citations reuse numbers.** Each answer numbers its own shortlist `[1]`, `[2]`..., so a follow-up's `[1]` is a different pattern from the `[1]` in the history the crafter just read. Citations stay valid per answer, but "is [1] free?" is ambiguous. Low priority; the UI shows cards by name.
-- [ ] **Search: the first request after a deploy pays ~2.6 s to load the reranker.** The cross-encoder loads lazily to save ~500 MB at boot, so the first search measured 2,879 ms in `rerank` against a warm p50 of 240 ms. Options: load it in the lifespan if Railway's memory allows, or warm it with one dummy rerank right after startup.
-- [ ] **Search: rerank is ~75% of search latency.** Over 22 uncached searches, rerank p50/p95 was 240/288 ms against a total of 319/373 ms; retrieval 71/89, embedding 12/24. Any latency work starts with `RERANK_POOL` (60 candidates) or a smaller cross-encoder, measured against the search eval's nDCG floor.
-- [ ] **Ask: extraction is as slow as writing the answer.** Over 6 uncached asks, `extract` p50/p95 was 1,214/2,172 ms for at most 200 tokens of JSON, against 1,752/2,052 for the answer. It's the slowest stage at p95. Ideas to measure: skip extraction when the message has no filter words and no history, a lower `max_tokens`, or caching extraction separately from the answer.
-- [ ] **Eval: the automatic grounding checks catch none of the real failures.** Unsupported numbers and unretrieved pattern names were 0 for 0 against hand labels: every unfaithful answer used real numbers and names, just oversold, mis-compared, or swapped. Keep them as cheap tripwires, but faithfulness needs a judge. Next: an LLM judge, measured against the 31 hand labels before it's trusted.
-- [ ] **Some designer names are Ravelry handles.** 186 patterns have a lowercase handle such as `tincanknits` instead of "Tin Can Knits", because that is what Ravelry's `pattern_author.name` holds. Search still finds them (the designer leg strips spaces), but cards show the handle. Low priority. Map known handles to display names, or use the designer's profile name if the API has one.
-- [ ] **Search: the keyword leg drops out on natural-language queries.** `plainto_tsquery` requires every word to match, so "dishcloth for the kitchen", "something for my dog", and "blanket for the couch" match 0, 3, and 5 patterns. When the keyword and designer legs are both empty, hybrid falls back to vector-only, which is why hybrid and vector return identical lists for those queries. Try OR semantics (`websearch_to_tsquery` or an OR-joined `to_tsquery`) and measure it with the labeled set before shipping.
-- [ ] **Corpus coverage is lopsided.** Of 16,536 patterns: 1,234 vests, 412 mid-calf socks, but only 3 dishcloths, 7 bags (market bag, tote, purse), 4 toys, and no granny-square bags at all. Seeding sends each word in `SEED_CATEGORIES` (`app/services/seeding.py`) to Ravelry as a free-text query. "dishcloth" is one of those words, yet only 3 dishcloths landed, so a keyword query isn't a category filter. Search can't be better than what's seeded. Log per-query yields, and seed with Ravelry's category filter instead of free-text keywords.
-- [ ] **Search: "blanket for the couch" returns no throws.** The corpus has 61 throws, and only one (Heirloom Temperature Blanket) reaches any variant's top 10. Vector and hybrid return baby blankets; production returns a cardigan and mittens (see the reranker item). Labeled in `search-intent-016`.
-- [ ] **Search: the reranker loses to vector-only on some intent queries.** On the labeled set, production beats vector-only overall (nDCG@10 0.888 vs 0.826) but loses on "blanket for the couch" (0.43 vs 0.69), "granny square bag" (0.00 vs 0.32), "oversized cardigan" (0.78 vs 0.86), and crochet blanket, paid (0.86 vs 0.93). The cross-encoder rewards phrase overlap with the description over what the pattern actually is. For the couch query, rank 1 is a cardigan whose description says "your favorite heirloom blanket from the couch", and rank 3 is mittens ("curled up on the couch with a blanket"). The mittens query shows the same pattern with titles. Ideas to measure: blend the stage-1 score into the rerank score, or rerank on name + category + tags instead of the description text.
-- [ ] **Search: 7% of relevant patterns never reach the reranker.** `candidate_recall@60` is 0.928, and as low as 0.71 for "fingerless mittens" and 0.76 for "baby blanket". Raising `RERANK_POOL` or fixing the keyword leg should show up here first.
-- [x] **Ask: unrated difficulty was described as "very easy."** Ravelry stores no rating as `0` (as text, so `"0"` was truthy), and the context printed `difficulty 0/10`. The answer then called a pattern "very easy, rated 0/10" (`ask-filter-001`). Fixed: the context leaves difficulty out unless it is above 0.
-- [x] **Ask: extraction picked `category: Other` and retrieved junk.** The prompt offered the 40 most common categories, so Dishcloth, Socks, Toys, and bags weren't choices, and the model picked "Other" (a real category of misfits). Hitchhiker is filed under Scarf, so choosing "Shawl / Wrap" excluded it. Four of the six unfaithful answers in the baseline were weak matches oversold after this. Fixed by never extracting category; search ranks by meaning instead. Dishcloth precision@2 went from 0.0 to 1.0.
-- [x] **Ask: extraction set `craft: Knitting` for "a cozy oversized sweater."** The prompt rule against inferring craft didn't hold, so craft is now kept only if the crafter's own words name it (`ask-intent-002`).
-- [x] **Degraded results were cached for the full TTL.** When the reranker threw, search served unranked hybrid results (by design) and then cached them for 30 minutes, so a brief model failure kept serving worse results long after it recovered, with nothing recorded. Same for Ask when extraction fell back. Fixed: degraded responses are served but not cached, and marked in `search_events.fallbacks`.
-- [x] **Zero-result searches logged 0 ms latency.** The pipeline returns `latency_ms: 0` when retrieval finds nothing, and the route copied it, which pulled latency percentiles down. Fixed: every route records measured wall time.
-- [x] **`/health` said "ok" with the database down.** It returned a constant. Fixed: it pings Postgres and Redis with a 2 s timeout and returns 503 with which one is down.
-- [x] **Failed searches left no record.** A 503 from search or Ask wrote nothing to `search_events`, so outages were invisible in analytics. Fixed: failures are logged with `error` set and counted apart from success latency.
-- [x] **Eval: designer check didn't strip spaces.** The eval's skip rule and designer-share check compared "Tin Can Knits" literally, so the case was skipped even though search handles it. Fixed during search evaluation by matching with spaces removed, the same way the designer search leg does.
+- [ ] **"hat to match my mittens" returns mittens** — Top 3 are mitten patterns (cross-encoder > 0.99); the reranker rewards "mittens" and misses that the wanted object is a hat. Found by `search-negative-002`. Labeled nDCG@10 0.60; real hat-and-mitten sets sit at ranks 4–5. Fix in the iterate phase against that score.
+- [ ] **Keyword leg drops out on natural-language queries** — `plainto_tsquery` requires every word to match, so "dishcloth for the kitchen", "something for my dog", and "blanket for the couch" match 0 / 3 / 5 patterns. When keyword and designer legs are empty, hybrid falls back to vector-only. Try OR semantics (`websearch_to_tsquery` or OR-joined `to_tsquery`) and measure on the labeled set before shipping.
+- [ ] **"blanket for the couch" returns no throws** — Corpus has 61 throws; only one reaches any variant's top 10. Vector/hybrid return baby blankets; production returns a cardigan and mittens (see reranker item). Labeled in `search-intent-016`.
+- [ ] **Reranker loses to vector-only on some intent queries** — Production beats vector-only overall (nDCG@10 0.888 vs 0.826) but loses on "blanket for the couch", "granny square bag", "oversized cardigan", and crochet blanket / paid. Cross-encoder rewards description phrase overlap over what the pattern is. Ideas: blend stage-1 into rerank score, or rerank on name + category + tags.
+- [ ] **7% of relevant patterns never reach the reranker** — `candidate_recall@60` is 0.928; as low as 0.71 for "fingerless mittens" and 0.76 for "baby blanket". Raising `RERANK_POOL` or fixing the keyword leg should show up here first.
+- [ ] **First request after deploy pays ~2.6 s to load the reranker** — Cross-encoder loads lazily (~500 MB saved at boot); first search measured 2,879 ms in `rerank` vs warm p50 240 ms. Options: load in lifespan if Railway memory allows, or warm with one dummy rerank after startup.
+- [ ] **Rerank is ~75% of search latency** — Uncached: rerank p50/p95 240/288 ms of total 319/373 ms. Latency work starts with `RERANK_POOL` (60) or a smaller cross-encoder, measured against the search eval nDCG floor.
 
+### Ask Woolly
 
-## To do
+- [ ] **Extraction still invents `difficulty` and `free` filters** — Gift-for-beginner becomes `difficulty: beginner`; "paid is fine" becomes `free: false`. Prompt rules failed on `gpt-4o-mini` (`ask-filter-004`, `ask-filter-006`). Craft is already guarded in code; these need a similar check or soft filters.
+- [ ] **Answer model gets numeric comparisons wrong** — Called 3.8/10 "similar" to 2.3/10 (`ask-followup-001`); also mis-compared warmth vs yarn weight (`ask-intent-004`). Ideas: tell the prompt lower rating is easier and to state both numbers, or sort context so comparisons are by position.
+- [ ] **Named pattern that isn't retrieved gets silently swapped** — Asked about Hitchhiker; answer discusses "Hitchin' a Ride" as if it were the one named (`ask-adversarial-005`). Rule: if the user names a pattern and it isn't in context, say so first.
+- [ ] **Hitchhiker only reaches rank 5 for its own name** — Retrieval returns "Hitchin' a Ride" first; real Hitchhiker isn't in the corpus. Title queries for famous patterns depend on seeding — see corpus coverage.
+- [ ] **Follow-up citations reuse numbers** — Each answer renumbers `[1]`, `[2]`…, so a follow-up's `[1]` is a different pattern. Low priority; UI shows cards by name.
+- [ ] **Extraction is as slow as writing the answer** — Uncached: `extract` p50/p95 1,214/2,172 ms vs answer 1,752/2,052. Ideas: skip extraction when no filter words and no history, lower `max_tokens`, or cache extraction separately.
+
+### Eval & data
+
+- [ ] **Automatic grounding checks catch none of the real failures** — Unsupported numbers/names were 0 for 0 against hand labels; unfaithful answers used real facts but oversold, mis-compared, or swapped. Next: LLM judge measured against the 31 hand labels.
+- [ ] **Some designer names are Ravelry handles** — 186 patterns show lowercase handles (e.g. `tincanknits`) instead of display names. Search still finds them; cards look wrong. Low priority: map known handles or use profile name from the API.
+- [ ] **Corpus coverage is lopsided** — Of 16,536 patterns: 1,234 vests, 412 mid-calf socks, but only 3 dishcloths, 7 bags, 4 toys, no granny-square bags. Seeding uses free-text `SEED_CATEGORIES` words, not Ravelry category filters. Log per-query yields and seed with category filters.
+
+## Features
+
+### UI
+
+- [ ] **Desktop two-column layout** — On desktop only, use horizontal space with a two-column composition (e.g. search / results or main content + sidebar). Keep a single-column stack on mobile.
+- [ ] **Make the UI look better**
+
+### Product
 
 - [ ] Add username
 - [ ] Add freeform patterns in the library
 - [ ] Improve search
-- [ ] Make the UI look better
 - [ ] Connect to the user's current Ravelry account
 - [ ] Public project pages
-- [ ] Stitch counter: count every 10 stitches instead of every row
-
-
+- [ ] **Stitch counter:** count every 10 stitches instead of every row
 
 ## Done
 
-- [x] **Recommendations engine.** Taste-vector content-based recs, with a popularity fallback. Later: collaborative filtering, and click feedback in the taste vector.
-- [x] **Visual search.** Upload a photo of a knit or crochet object and get a similar pattern (CLIP). Later: text-to-image via CLIP, and an ANN index on `image_embedding`.
+### Bugs fixed
+
+- [x] Ask: unrated difficulty described as "very easy" (context omitted difficulty unless > 0)
+- [x] Ask: extraction picked `category: Other` and retrieved junk (stop extracting category)
+- [x] Ask: extraction inferred `craft: Knitting` for "cozy oversized sweater" (keep craft only if named)
+- [x] Degraded results cached for full TTL (serve but don't cache; mark `fallbacks`)
+- [x] Zero-result searches logged 0 ms latency (always record wall time)
+- [x] `/health` said ok with DB down (ping Postgres + Redis; 503 when degraded)
+- [x] Failed searches left no `search_events` record
+- [x] Eval designer check didn't strip spaces
+
+### Shipped features
+
+- [x] **Recommendations engine** — Taste-vector recs with popularity fallback. Later: collaborative filtering, click feedback in the taste vector.
+- [x] **Visual search** — Photo → similar pattern (CLIP). Later: text-to-image via CLIP, ANN on `image_embedding`.
