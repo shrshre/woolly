@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
@@ -20,12 +21,21 @@ from app.db.init_db import init_db
 from app.db.session import get_engine
 from app.observability import TraceMiddleware
 from app.scheduler import start_scheduler, stop_scheduler
+from app.services import reranking_service
 from app.services.embedding_service import get_model
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
+
+
+def _warm_reranker() -> None:
+    try:
+        reranking_service.warm_up()
+        logger.info("Reranker warmed up.")
+    except Exception as exc:  # the first search will just load it lazily
+        logger.warning("Reranker warm-up failed (%s); it will load on first search.", exc)
 
 
 @asynccontextmanager
@@ -35,7 +45,11 @@ async def lifespan(_: FastAPI):
     except Exception as exc:
         logger.warning("Database init failed (%s); semantic search will be unavailable.", exc)
     get_model()  # load the embedding model once at startup, not per request
-    # Reranker loads lazily on the first search (saves ~500MB RAM at boot).
+    # The reranker (~500MB) loads in a background thread so boot and /health
+    # aren't delayed, but the first search doesn't pay the load either.
+    # WARM_RERANKER=false falls back to loading it lazily on the first search.
+    if settings.warm_reranker:
+        threading.Thread(target=_warm_reranker, name="warm-reranker", daemon=True).start()
     start_scheduler()  # incremental re-seed every 24h
     yield
     stop_scheduler()

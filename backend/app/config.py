@@ -33,6 +33,20 @@ class Settings(BaseSettings):
     # Asks allowed per hour per account (or per browser session when anonymous).
     ask_rate_limit_per_hour: int = 10
 
+    # Load the cross-encoder reranker in the background right after boot so the
+    # first search doesn't pay the ~2.6 s model load. Set false on hosts too
+    # small to hold the model (~500 MB) at startup; it then loads lazily.
+    warm_reranker: bool = True
+
+    # Stage-1 candidates sent to the cross-encoder. Rerank cost is linear in
+    # this (about 4 ms per candidate on CPU); results returned are capped at
+    # min(pool, MAX_RESULTS).
+    rerank_pool: int = 60
+
+    # Cross-encoder used for stage 2. Changing it changes every rerank_score,
+    # so re-baseline the search evals (and re-record Ask) when you do.
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
     # PostgreSQL
     database_url: str = "postgresql://woolly:woolly@localhost:5432/woolly"
 

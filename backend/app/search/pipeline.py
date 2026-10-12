@@ -19,6 +19,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models import Pattern
 from app.observability import fallback, stage
 from app.search.filters import DifficultyTier
@@ -32,7 +33,9 @@ MAX_RESULTS = 50
 # Candidates pulled from stage 1 into the reranker. Larger than MAX_RESULTS so
 # reranking can promote strong matches that stage-1 scoring ranked lower, while
 # staying small enough to keep cross-encoder latency reasonable on CPU.
-RERANK_POOL = 60
+# Cost is linear in the pool, so it is a setting (RERANK_POOL) to measure
+# against the search eval floors rather than a constant.
+RERANK_POOL = get_settings().rerank_pool
 
 
 def search(

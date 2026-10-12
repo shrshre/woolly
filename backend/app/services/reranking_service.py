@@ -13,9 +13,11 @@ import math
 import threading
 from typing import Any
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+MODEL_NAME = get_settings().rerank_model
 
 # Scores below this are dropped from results (after sigmoid, 0-1 scale)...
 MIN_RERANK_SCORE = 0.1
@@ -39,6 +41,16 @@ def get_reranker():
                 _model = CrossEncoder(MODEL_NAME)
                 logger.info("Cross-encoder model loaded.")
     return _model
+
+
+def warm_up() -> None:
+    """Load the model and run one dummy prediction.
+
+    The first predict() does extra one-time setup beyond loading weights, so a
+    real inference is what actually makes the first user search fast. Safe to
+    call from a background thread (loading is guarded by a lock).
+    """
+    get_reranker().predict([("warm up", "warm up")])
 
 
 def _sigmoid(x: float) -> float:

@@ -10,8 +10,18 @@
 - [ ] **"blanket for the couch" returns no throws** — Corpus has 61 throws; only one reaches any variant's top 10. Vector/hybrid return baby blankets; production returns a cardigan and mittens (see reranker item). Labeled in `search-intent-016`.
 - [ ] **Reranker loses to vector-only on some intent queries** — Production beats vector-only overall (nDCG@10 0.888 vs 0.826) but loses on "blanket for the couch", "granny square bag", "oversized cardigan", and crochet blanket / paid. Cross-encoder rewards description phrase overlap over what the pattern is. Ideas: blend stage-1 into rerank score, or rerank on name + category + tags.
 - [ ] **7% of relevant patterns never reach the reranker** — `candidate_recall@60` is 0.928; as low as 0.71 for "fingerless mittens" and 0.76 for "baby blanket". Raising `RERANK_POOL` or fixing the keyword leg should show up here first.
-- [ ] **First request after deploy pays ~2.6 s to load the reranker** — Cross-encoder loads lazily (~500 MB saved at boot); first search measured 2,879 ms in `rerank` vs warm p50 240 ms. Options: load in lifespan if Railway memory allows, or warm with one dummy rerank after startup.
-- [ ] **Rerank is ~75% of search latency** — Uncached: rerank p50/p95 240/288 ms of total 319/373 ms. Latency work starts with `RERANK_POOL` (60) or a smaller cross-encoder, measured against the search eval nDCG floor.
+- [ ] **Rerank is ~75% of search latency** — Uncached: rerank p50/p95 240/288 ms of total 319/373 ms. Measured (`scripts/bench_rerank.py`, `RERANK_POOL` / `RERANK_MODEL` env settings): no quality-neutral win found. Score-preserving changes (batch size, thread count, max length, ONNX Runtime) all land within noise of ~4 ms per candidate; int8 quantization doesn't run on the Docker arm64 build. Pool/model trade quality directly (production variant, search suite, same 26 labeled queries, so none of this is held out):
+
+  | Config | ndcg@10 | p50 ms |
+  |---|---|---|
+  | pool 60, L-6 (shipped) | 0.888 | 300 |
+  | pool 50 | 0.859 | 263 |
+  | pool 40 | 0.810 | 236 |
+  | pool 30 | 0.760 | 195 |
+  | pool 60, MiniLM-L-4 | 0.810 | 226 |
+  | pool 60, MiniLM-L-2 | 0.776 | 157 |
+
+  Several rows also breach the recall floors, and `judged@10` falls below 0.9 for the smaller pools, so their nDCG is understated until the new rows are graded. Next: make stage 1 better so a smaller pool loses less, rather than shrinking the pool.
 
 ### Ask Woolly
 
@@ -32,7 +42,6 @@
 
 ### UI
 
-- [ ] **Desktop two-column layout** — On desktop only, use horizontal space with a two-column composition (e.g. search / results or main content + sidebar). Keep a single-column stack on mobile.
 - [ ] **Make the UI look better**
 
 ### Product
@@ -56,8 +65,13 @@
 - [x] `/health` said ok with DB down (ping Postgres + Redis; 503 when degraded)
 - [x] Failed searches left no `search_events` record
 - [x] Eval designer check didn't strip spaces
+- [x] First search after deploy paid ~2.6 s to load the reranker (now warmed in a background thread at startup; `WARM_RERANKER=false` restores lazy loading). Verify the cold-start drop on Railway after deploy, and watch boot memory.
 
 ### Shipped features
+
+- [x] **Desktop two-column layout** — Search controls on top, results in two columns at ≥1024px; single column below.
+- [x] **Photo search tab** — Search by photo moved into the Search / Ask Woolly / Photo toggle, with its own upload view.
+- [x] **Filters popover** — Filters condensed into one button with an active-filter count.
 
 - [x] **Recommendations engine** — Taste-vector recs with popularity fallback. Later: collaborative filtering, click feedback in the taste vector.
 - [x] **Visual search** — Photo → similar pattern (CLIP). Later: text-to-image via CLIP, ANN on `image_embedding`.
